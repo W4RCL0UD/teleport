@@ -21,7 +21,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509/pkix"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -32,7 +31,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/gravitational/trace"
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/require"
 
@@ -47,60 +45,6 @@ import (
 	"github.com/gravitational/teleport/lib/tlsca"
 	"github.com/gravitational/teleport/lib/utils"
 )
-
-// TestAuthPOST tests the handler of POST /x-teleport-auth.
-func TestAuthPOST(t *testing.T) {
-	const (
-		stateValue  = "012ac605867e5a7d693cd6f49c7ff0fb"
-		cookieValue = "5588e2be54a2834b4f152c56bafcd789f53b15477129d2ab4044e9a3c1bf0f3b"
-	)
-
-	fakeClock := clockwork.NewFakeClockAt(time.Date(2017, 05, 10, 18, 53, 0, 0, time.UTC))
-	tests := []struct {
-		desc           string
-		stateInRequest string
-		stateInCookie  string
-		sessionError   error
-		outStatusCode  int
-	}{
-		{
-			desc:           "success",
-			stateInRequest: stateValue,
-			stateInCookie:  stateValue,
-			sessionError:   nil,
-			outStatusCode:  http.StatusOK,
-		},
-		{
-			desc:           "missing state token in request",
-			stateInRequest: "",
-			stateInCookie:  stateValue,
-			sessionError:   nil,
-			outStatusCode:  http.StatusForbidden,
-		},
-		{
-			desc:           "invalid session",
-			stateInRequest: stateValue,
-			stateInCookie:  stateValue,
-			sessionError:   trace.NotFound("invalid session"),
-			outStatusCode:  http.StatusForbidden,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.desc, func(t *testing.T) {
-			p := setup(t, fakeClock, mockAuthClient{sessionError: test.sessionError}, nil)
-
-			req, err := json.Marshal(fragmentRequest{
-				StateValue:  test.stateInRequest,
-				CookieValue: cookieValue,
-			})
-			require.NoError(t, err)
-
-			status, _ := p.makeRequest(t, "POST", "/x-teleport-auth", AuthStateCookieName, test.stateInCookie, req)
-			require.Equal(t, test.outStatusCode, status)
-		})
-	}
-}
 
 func TestHasName(t *testing.T) {
 	for _, test := range []struct {
