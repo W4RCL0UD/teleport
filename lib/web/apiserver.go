@@ -245,6 +245,21 @@ func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// request is already authenticated (has a session cookie), forward to
 	// application handlers. If the request is unauthenticated and requesting a
 	// FQDN that is not of the proxy, redirect to application launcher.
+
+	// Allow minimal CORS from only the proxy origin
+	// This allows for requests from the proxy to `POST` to `/x-teleport-auth` and only
+	// permits the header `X-Cookie-Name`.
+	// This is for the web UI to post a request to the application to get the proper app session
+	// cookie set on the right application subdomain.
+	w.Header().Set("Access-Control-Allow-Origin", "https://"+h.handler.cfg.ProxyPublicAddrs[0].Host())
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
+	w.Header().Set("Access-Control-Allow-Methods", "POST")
+	w.Header().Set("Access-Control-Allow-Headers", "X-Cookie-Name")
+
+	if r.Method == http.MethodOptions {
+		return
+	}
+
 	if h.appHandler != nil && (app.HasFragment(r) || app.HasSession(r) || app.HasClientCert(r)) {
 		h.appHandler.ServeHTTP(w, r)
 		return
@@ -253,6 +268,7 @@ func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, redir, http.StatusFound)
 		return
 	}
+
 	// Serve the Web UI.
 	h.handler.ServeHTTP(w, r)
 }
