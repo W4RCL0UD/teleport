@@ -278,7 +278,7 @@ func (p *Pack) CreateAppSession(t *testing.T, publicAddr, clusterName string) st
 	err = json.Unmarshal(body, &casResp)
 	require.NoError(t, err)
 
-	return casResp.CookieValue
+	return casResp.CookieName
 }
 
 // LockUser will lock the configured user for this pack.

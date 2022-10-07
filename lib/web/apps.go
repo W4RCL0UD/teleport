@@ -21,6 +21,7 @@ package web
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/gravitational/trace"
 	"github.com/julienschmidt/httprouter"
@@ -88,8 +89,8 @@ type GetAppFQDNResponse struct {
 type CreateAppSessionRequest resolveAppParams
 
 type CreateAppSessionResponse struct {
-	// CookieValue is the application session cookie value.
-	CookieValue string `json:"value"`
+	// CookieName is the application session cookie value.
+	CookieName string `json:"cookie_name"`
 	// FQDN is application FQDN.
 	FQDN string `json:"fqdn"`
 }
@@ -230,9 +231,33 @@ func (h *Handler) createAppSession(w http.ResponseWriter, r *http.Request, p htt
 		return nil, trace.Wrap(err)
 	}
 
+	cookieRandomCharacters, err := utils.CryptoRandomHex(16)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	cookieName := app.SessionCookiePrefix + cookieRandomCharacters
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieName,
+		Value:    ws.GetName(),
+		Path:     "/",
+		Domain:   h.cfg.ProxyPublicAddrs[0].Host(),
+		HttpOnly: true,
+		Secure:   true,
+		Expires:  h.clock.Now().Add(1 * time.Minute),
+		// Set Same-Site policy for the session cookie to None in order to
+		// support redirects that identity providers do during SSO auth.
+		// Otherwise the session cookie won't be sent and the user will
+		// get redirected to the application launcher.
+		//
+		// https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Set-Cookie/SameSite
+		SameSite: http.SameSiteNoneMode,
+	})
+
 	return &CreateAppSessionResponse{
-		CookieValue: ws.GetName(),
-		FQDN:        result.FQDN,
+		CookieName: cookieName,
+		FQDN:       result.FQDN,
 	}, nil
 }
 

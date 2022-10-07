@@ -50,6 +50,8 @@ type HandlerConfig struct {
 	AccessPoint auth.ProxyAccessPoint
 	// ProxyClient holds connections to leaf clusters.
 	ProxyClient reversetunnel.Tunnel
+	// ProxyPublicAddrs contains web proxy public addresses.
+	ProxyPublicAddrs []utils.NetAddr
 	// CipherSuites is the list of TLS cipher suites that have been configured
 	// for this process.
 	CipherSuites []uint16
