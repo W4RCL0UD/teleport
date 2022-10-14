@@ -121,10 +121,12 @@ func (process *TeleportProcess) initDatabaseService() (retErr error) {
 				},
 				DynamicLabels: types.LabelsToV2(db.DynamicLabels),
 				AD: types.AD{
-					KeytabFile: db.AD.KeytabFile,
-					Krb5File:   db.AD.Krb5File,
-					Domain:     db.AD.Domain,
-					SPN:        db.AD.SPN,
+					KeytabFile:  db.AD.KeytabFile,
+					Krb5File:    db.AD.Krb5File,
+					Domain:      db.AD.Domain,
+					SPN:         db.AD.SPN,
+					LDAPCert:    db.AD.LDAPCert,
+					KDCHostName: db.AD.KDCHostName,
 				},
 				Azure: types.Azure{
 					ResourceID: db.Azure.ResourceID,

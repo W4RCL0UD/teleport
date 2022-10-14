@@ -37,7 +37,7 @@ func TestConnectorSelection(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	connector := &connector{Auth: &mockAuth{}}
+	connector := &connector{DBAuth: &mockAuth{}}
 
 	for _, tt := range []struct {
 		desc         string

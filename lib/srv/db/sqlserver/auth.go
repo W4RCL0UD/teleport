@@ -17,54 +17,103 @@ limitations under the License.
 package sqlserver
 
 import (
+	"context"
+	"crypto/x509"
+	"encoding/pem"
+	"strings"
+
 	"github.com/gravitational/trace"
 	"github.com/jcmturner/gokrb5/v8/client"
 	"github.com/jcmturner/gokrb5/v8/config"
 	"github.com/jcmturner/gokrb5/v8/keytab"
 	"github.com/jcmturner/gokrb5/v8/spnego"
 
+	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/srv/db/common"
+	"github.com/gravitational/teleport/lib/srv/db/sqlserver/kinit"
 )
 
-// getAuth returns Kerberos authenticator used by SQL Server driver.
-//
-// TODO(r0mant): Unit-test this. In-memory Kerberos server?
-func (c *connector) getAuth(sessionCtx *common.Session) (*krbAuth, error) {
+// keytabClient returns a kerberos client using a keytab file
+func keytabClient(session *common.Session) (*client.Client, error) {
 	// Load keytab.
-	keytab, err := keytab.Load(sessionCtx.Database.GetAD().KeytabFile)
+	kt, err := keytab.Load(session.Database.GetAD().KeytabFile)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
 	// Load krb5.conf.
-	config, err := config.Load(sessionCtx.Database.GetAD().Krb5File)
+	conf, err := config.Load(session.Database.GetAD().Krb5File)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
 	// Create Kerberos client.
-	client := client.NewWithKeytab(
-		sessionCtx.DatabaseUser,
-		sessionCtx.Database.GetAD().Domain,
-		keytab,
-		config,
+	kbClient := client.NewWithKeytab(
+		session.DatabaseUser,
+		session.Database.GetAD().Domain,
+		kt,
+		conf,
 		// Active Directory does not commonly support FAST negotiation.
 		client.DisablePAFXFAST(true))
 
 	// Login.
-	err = client.Login()
+	err = kbClient.Login()
+	return kbClient, err
+}
+
+// kinitClient returns a kerberos client using a kinit ccache
+func kinitClient(ctx context.Context, session *common.Session, auth auth.ClientI, dataDir string) (*client.Client, error) {
+	ldapPem, _ := pem.Decode([]byte(session.Database.GetAD().LDAPCert))
+
+	cert, err := x509.ParseCertificate(ldapPem.Bytes)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
+	k := kinit.NewWithCommandLineProvider(auth,
+		session.Identity.Username,
+		strings.ToUpper(session.Database.GetAD().Domain),
+		session.Database.GetAD().Domain,
+		session.Database.GetAD().Domain,
+		dataDir,
+		cert, &kinit.DBCertGetter{
+			Auth:            auth,
+			KDCHostName:     strings.ToUpper(session.Database.GetAD().KDCHostName),
+			RealmName:       session.Database.GetAD().Domain,
+			AdminServerName: session.Database.GetAD().KDCHostName,
+			UserName:        session.Identity.Username,
+			LDAPCA:          cert,
+		},
+	)
+
+	// create the kinit credentials cache using the previously prepared cert/key pair
+	cc, err := k.UseOrCreateCredentialsCache(ctx)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	// Load krb5.conf.
+	conf, err := config.Load(session.Database.GetAD().Krb5File)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	// Create Kerberos client from ccache. No need to login, `kinit` will have already done that.
+	return client.NewFromCCache(cc, conf, client.DisablePAFXFAST(true))
+}
+
+// getAuth returns Kerberos authenticator used by SQL Server driver.
+//
+// TODO(r0mant): Unit-test this. In-memory Kerberos server?
+func (c *connector) getAuth(sessionCtx *common.Session, kbClient *client.Client) (*krbAuth, error) {
 	// Obtain service ticket for the database's Service Principal Name.
-	ticket, encryptionKey, err := client.GetServiceTicket(sessionCtx.Database.GetAD().SPN)
+	ticket, encryptionKey, err := kbClient.GetServiceTicket(sessionCtx.Database.GetAD().SPN)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
 	// Create init negotiation token.
-	initToken, err := spnego.NewNegTokenInitKRB5(client, ticket, encryptionKey)
+	initToken, err := spnego.NewNegTokenInitKRB5(kbClient, ticket, encryptionKey)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
