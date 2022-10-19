@@ -4073,11 +4073,11 @@ func TestCreateAppSession(t *testing.T) {
 
 			// Verify that the application session was created.
 			sess, err := s.server.Auth().GetAppSession(s.ctx, types.GetAppSessionRequest{
-				SessionID: response.CookieName,
+				SessionID: response.CookieValue,
 			})
 			require.NoError(t, err)
 			require.Equal(t, tt.outUsername, sess.GetUser())
-			require.Equal(t, response.CookieName, sess.GetName())
+			require.Equal(t, response.CookieValue, sess.GetName())
 		})
 	}
 }

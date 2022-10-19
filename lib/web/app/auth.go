@@ -18,18 +18,12 @@ package app
 
 import (
 	"net/http"
-	"strings"
-	"time"
 
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/httplib"
 	"github.com/gravitational/trace"
 
 	"github.com/julienschmidt/httprouter"
-)
-
-const (
-	SessionCookiePrefix = "__Secure-grv_app_session_"
 )
 
 // handleAuth handles authentication for an app
@@ -39,48 +33,24 @@ const (
 func (h *Handler) handleAuth(w http.ResponseWriter, r *http.Request, p httprouter.Params) error {
 	httplib.SetNoCacheHeaders(w.Header())
 
-	cookieName := r.Header.Get("X-Cookie-Name")
-	if cookieName == "" {
-		return trace.BadParameter("X-Cookie-Name header missing")
-	}
-
-	if !strings.HasPrefix(cookieName, SessionCookiePrefix) {
-		return trace.BadParameter("X-Cookie-Name is malformed")
-	}
-
-	cookie, err := r.Cookie(cookieName)
-	if err != nil {
-		h.log.Warn("Request failed: cookie matching the name in the X-Cookie-Name header not found.")
-		return trace.AccessDenied("access denied")
+	cookieValue := r.Header.Get("X-Cookie-Value")
+	if cookieValue == "" {
+		return trace.BadParameter("X-Cookie-Value header missing")
 	}
 
 	// Validate that the caller is asking for a session that exists.
-	_, err = h.c.AccessPoint.GetAppSession(r.Context(), types.GetAppSessionRequest{
-		SessionID: cookie.Value,
+	_, err := h.c.AccessPoint.GetAppSession(r.Context(), types.GetAppSessionRequest{
+		SessionID: cookieValue,
 	})
 	if err != nil {
 		h.log.Warn("Request failed: session does not exist.")
 		return trace.AccessDenied("access denied")
 	}
 
-	// Delete the temporary cookie by setting the expiry time to a minute ago, and the value to nothing
-	// Note: we have to set this cookie on the same domain it was set from (the proxy).
-	// This prevents reuse.of the cookie.
-	http.SetCookie(w, &http.Cookie{
-		Name:     cookieName,
-		Value:    "",
-		Path:     "/",
-		Domain:   h.c.ProxyPublicAddrs[0].Host(),
-		HttpOnly: true,
-		Secure:   true,
-		Expires:  h.c.Clock.Now().UTC().Add(-1 * time.Minute),
-		SameSite: http.SameSiteNoneMode,
-	})
-
 	// Set the "Set-Cookie" header on the response.
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
-		Value:    cookie.Value,
+		Value:    cookieValue,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   true,
