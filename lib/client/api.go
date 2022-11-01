@@ -1118,10 +1118,18 @@ func Status(profileDir, proxyHost string) (*ProfileStatus, []*ProfileStatus, err
 func (c *Config) LoadProfile(profileDir string, proxyName string) error {
 	// read the profile:
 	cp, err := profile.FromDir(profileDir, ProxyHost(proxyName))
-	if err != nil {
-		if trace.IsNotFound(err) {
+	if trace.IsNotFound(err) {
+		// try loading profile from ssh agent
+		agent := connectToSSHAgent()
+		if agent == nil {
 			return nil
+		} else {
+			cp, err = ProfileFromAgent(agent)
+			if err != nil {
+				return nil
+			}
 		}
+	} else if err != nil {
 		return trace.Wrap(err)
 	}
 

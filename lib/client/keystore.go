@@ -19,9 +19,9 @@ package client
 import (
 	"bufio"
 	"context"
+	"crypto"
 	"encoding/pem"
 	"fmt"
-	"io"
 	osfs "io/fs"
 	"os"
 	"path/filepath"
@@ -32,6 +32,7 @@ import (
 	"github.com/gravitational/trace"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/api/constants"
@@ -45,7 +46,6 @@ import (
 )
 
 const (
-
 	// profileDirPerms is the default permissions applied to the profile
 	// directory (usually ~/.tsh)
 	profileDirPerms os.FileMode = 0700
@@ -59,12 +59,12 @@ const (
 	tshConfigFileName = "config"
 )
 
-// LocalKeyStore interface allows for different storage backends for tsh to
+// KeyStore interface allows for different storage backends for tsh to
 // load/save its keys.
 //
-// The _only_ filesystem-based implementation of LocalKeyStore is declared
+// The _only_ filesystem-based implementation of KeyStore is declared
 // below (FSLocalKeyStore)
-type LocalKeyStore interface {
+type KeyStore interface {
 	// AddKey adds the given key to the store.
 	AddKey(key *Key) error
 
@@ -85,7 +85,10 @@ type LocalKeyStore interface {
 	// a hostname.
 	AddKnownHostKeys(hostname, proxyHost string, keys []ssh.PublicKey) error
 
-	// GetKnownHostKeys returns all public keys for a hostname.
+	// GetKnownHostsFile returns a known hosts file.
+	GetKnownHostsFile() ([]byte, error)
+
+	// GetKnownHostKeys returns all known public host keys for the given host name.
 	GetKnownHostKeys(hostname string) ([]ssh.PublicKey, error)
 
 	// SaveTrustedCerts saves trusted TLS certificates of certificate authorities.
@@ -98,6 +101,8 @@ type LocalKeyStore interface {
 	// GetSSHCertificates gets all certificates signed for the given user and proxy,
 	// including certificates for trusted clusters.
 	GetSSHCertificates(proxyHost, username string) ([]*ssh.Certificate, error)
+
+	Profile(username string) (*profile.Profile, error)
 }
 
 // FSLocalKeyStore implements LocalKeyStore interface using the filesystem.
@@ -131,6 +136,31 @@ func initKeysDir(dirPath string) (string, error) {
 		return "", trace.ConvertSystemError(err)
 	}
 	return dirPath, nil
+}
+
+// sshDir returns the SSH certificate path for the given KeyIndex.
+func (fs *FSLocalKeyStore) sshDir(proxy, user string) string {
+	return keypaths.SSHDir(fs.KeyDir, proxy, user)
+}
+
+// sshCertPath returns the SSH certificate path for the given KeyIndex.
+func (fs *FSLocalKeyStore) sshCertPath(idx KeyIndex) string {
+	return keypaths.SSHCertPath(fs.KeyDir, idx.ProxyHost, idx.Username, idx.ClusterName)
+}
+
+// appCertPath returns the TLS certificate path for the given KeyIndex and app name.
+func (fs *FSLocalKeyStore) appCertPath(idx KeyIndex, appname string) string {
+	return keypaths.AppCertPath(fs.KeyDir, idx.ProxyHost, idx.Username, idx.ClusterName, appname)
+}
+
+// databaseCertPath returns the TLS certificate path for the given KeyIndex and database name.
+func (fs *FSLocalKeyStore) databaseCertPath(idx KeyIndex, dbname string) string {
+	return keypaths.DatabaseCertPath(fs.KeyDir, idx.ProxyHost, idx.Username, idx.ClusterName, dbname)
+}
+
+// kubeCertPath returns the TLS certificate path for the given KeyIndex and kube cluster name.
+func (fs *FSLocalKeyStore) kubeCertPath(idx KeyIndex, kubename string) string {
+	return keypaths.KubeCertPath(fs.KeyDir, idx.ProxyHost, idx.Username, idx.ClusterName, kubename)
 }
 
 // AddKey adds the given key to the store.
@@ -371,6 +401,30 @@ func (fs *FSLocalKeyStore) updateKeyWithCerts(o CertOption, key *Key) error {
 	return o.updateKeyWithBytes(key, certBytes)
 }
 
+// GetSSHCertificates gets all certificates signed for the given user and proxy.
+func (fs *FSLocalKeyStore) GetSSHCertificates(proxyHost, username string) ([]*ssh.Certificate, error) {
+	certDir := fs.sshDir(proxyHost, username)
+	certFiles, err := os.ReadDir(certDir)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	sshCerts := make([]*ssh.Certificate, len(certFiles))
+	for i, certFile := range certFiles {
+		data, err := os.ReadFile(filepath.Join(certDir, certFile.Name()))
+		if err != nil {
+			return nil, trace.ConvertSystemError(err)
+		}
+
+		sshCerts[i], err = apisshutils.ParseCertificate(data)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+	}
+
+	return sshCerts, nil
+}
+
 // CertOption is an additional step to run when loading/deleting user certificates.
 type CertOption interface {
 	// certPath returns a path to the cert (or to a dir holding the certs)
@@ -543,16 +597,6 @@ func (fs *fsLocalNonSessionKeyStore) tlsCAsPath(proxy string) string {
 	return keypaths.TLSCAsPath(fs.KeyDir, proxy)
 }
 
-// sshDir returns the SSH certificate path for the given KeyIndex.
-func (fs *fsLocalNonSessionKeyStore) sshDir(proxy, user string) string {
-	return keypaths.SSHDir(fs.KeyDir, proxy, user)
-}
-
-// sshCertPath returns the SSH certificate path for the given KeyIndex.
-func (fs *fsLocalNonSessionKeyStore) sshCertPath(idx KeyIndex) string {
-	return keypaths.SSHCertPath(fs.KeyDir, idx.ProxyHost, idx.Username, idx.ClusterName)
-}
-
 // ppkFilePath returns the PPK (PuTTY-formatted) keypair path for the given KeyIndex.
 func (fs *fsLocalNonSessionKeyStore) ppkFilePath(idx KeyIndex) string {
 	return keypaths.PPKFilePath(fs.KeyDir, idx.ProxyHost, idx.Username)
@@ -563,19 +607,8 @@ func (fs *fsLocalNonSessionKeyStore) publicKeyPath(idx KeyIndex) string {
 	return keypaths.PublicKeyPath(fs.KeyDir, idx.ProxyHost, idx.Username)
 }
 
-// appCertPath returns the TLS certificate path for the given KeyIndex and app name.
-func (fs *fsLocalNonSessionKeyStore) appCertPath(idx KeyIndex, appname string) string {
-	return keypaths.AppCertPath(fs.KeyDir, idx.ProxyHost, idx.Username, idx.ClusterName, appname)
-}
-
-// databaseCertPath returns the TLS certificate path for the given KeyIndex and database name.
-func (fs *fsLocalNonSessionKeyStore) databaseCertPath(idx KeyIndex, dbname string) string {
-	return keypaths.DatabaseCertPath(fs.KeyDir, idx.ProxyHost, idx.Username, idx.ClusterName, dbname)
-}
-
-// kubeCertPath returns the TLS certificate path for the given KeyIndex and kube cluster name.
-func (fs *fsLocalNonSessionKeyStore) kubeCertPath(idx KeyIndex, kubename string) string {
-	return keypaths.KubeCertPath(fs.KeyDir, idx.ProxyHost, idx.Username, idx.ClusterName, kubename)
+func (fs *fsLocalNonSessionKeyStore) Profile(username string) (*profile.Profile, error) {
+	return profile.FromDir(fs.KeyDir, username)
 }
 
 // AddKnownHostKeys adds a new entry to `known_hosts` file.
@@ -646,38 +679,9 @@ func (fs *fsLocalNonSessionKeyStore) AddKnownHostKeys(hostname, proxyHost string
 	return fp.Sync()
 }
 
-// matchesWildcard ensures the given `hostname` matches the given `pattern`.
-// The `pattern` may be prefixed with `*.` which will match exactly one domain
-// segment, meaning `*.example.com` will match `foo.example.com` but not
-// `foo.bar.example.com`.
-func matchesWildcard(hostname, pattern string) bool {
-	// Trim any trailing "." in case of an absolute domain.
-	hostname = strings.TrimSuffix(hostname, ".")
-
-	// Don't allow non-wildcard patterns.
-	if !strings.HasPrefix(pattern, "*.") {
-		return false
-	}
-
-	// Never match a top-level hostname.
-	if !strings.Contains(hostname, ".") {
-		return false
-	}
-
-	// Don't allow empty matches.
-	pattern = pattern[2:]
-	if strings.TrimSpace(pattern) == "" {
-		return false
-	}
-
-	hostnameParts := strings.Split(hostname, ".")
-	hostnameRoot := strings.Join(hostnameParts[1:], ".")
-
-	return hostnameRoot == pattern
-}
-
-// GetKnownHostKeys returns all known public keys from `known_hosts`.
-func (fs *fsLocalNonSessionKeyStore) GetKnownHostKeys(hostname string) (keys []ssh.PublicKey, retErr error) {
+// GetKnownHostsFile returns a known hosts file.
+func (fs *fsLocalNonSessionKeyStore) GetKnownHostsFile() (knownHosts []byte, retErr error) {
+	var err error
 	unlock, err := utils.FSTryReadLockTimeout(context.Background(), fs.knownHostsPath(), 5*time.Second)
 	if err != nil {
 		return nil, trace.WrapWithMessage(err, "could not acquire lock for the `known_hosts` file")
@@ -691,33 +695,17 @@ func (fs *fsLocalNonSessionKeyStore) GetKnownHostKeys(hostname string) (keys []s
 		}
 		return nil, trace.Wrap(err)
 	}
-	var (
-		pubKey    ssh.PublicKey
-		retval    []ssh.PublicKey = make([]ssh.PublicKey, 0)
-		hosts     []string
-		hostMatch bool
-	)
-	for err == nil {
-		_, hosts, pubKey, _, bytes, err = ssh.ParseKnownHosts(bytes)
-		if err == nil {
-			hostMatch = (hostname == "")
-			if !hostMatch {
-				for i := range hosts {
-					if hosts[i] == hostname || matchesWildcard(hostname, hosts[i]) {
-						hostMatch = true
-						break
-					}
-				}
-			}
-			if hostMatch {
-				retval = append(retval, pubKey)
-			}
-		}
-	}
-	if err != io.EOF {
+	return bytes, nil
+}
+
+// GetKnownHostKeys returns all known public host keys for the given host name.
+func (fs *fsLocalNonSessionKeyStore) GetKnownHostKeys(hostname string) ([]ssh.PublicKey, error) {
+	knownHosts, err := fs.GetKnownHostsFile()
+	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	return retval, nil
+
+	return apisshutils.ParseKnownHosts([][]byte{knownHosts}, hostname)
 }
 
 // SaveTrustedCerts saves trusted TLS certificates of certificate authorities.
@@ -853,30 +841,6 @@ func (fs *fsLocalNonSessionKeyStore) GetTrustedCertsPEM(proxyHost string) ([][]b
 	return blocks, nil
 }
 
-// GetSSHCertificates gets all certificates signed for the given user and proxy.
-func (fs *fsLocalNonSessionKeyStore) GetSSHCertificates(proxyHost, username string) ([]*ssh.Certificate, error) {
-	certDir := fs.sshDir(proxyHost, username)
-	certFiles, err := os.ReadDir(certDir)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	sshCerts := make([]*ssh.Certificate, len(certFiles))
-	for i, certFile := range certFiles {
-		data, err := os.ReadFile(filepath.Join(certDir, certFile.Name()))
-		if err != nil {
-			return nil, trace.ConvertSystemError(err)
-		}
-
-		sshCerts[i], err = apisshutils.ParseCertificate(data)
-		if err != nil {
-			return nil, trace.Wrap(err)
-		}
-	}
-
-	return sshCerts, nil
-}
-
 // noLocalKeyStore is a LocalKeyStore representing the absence of a keystore.
 // All methods return errors. This exists to avoid nil checking everywhere in
 // LocalKeyAgent and prevent nil pointer panics.
@@ -900,6 +864,9 @@ func (noLocalKeyStore) DeleteKeys() error { return errNoLocalKeyStore }
 func (noLocalKeyStore) AddKnownHostKeys(hostname, proxyHost string, keys []ssh.PublicKey) error {
 	return errNoLocalKeyStore
 }
+func (noLocalKeyStore) GetKnownHostsFile() ([]byte, error) {
+	return nil, errNoLocalKeyStore
+}
 func (noLocalKeyStore) GetKnownHostKeys(hostname string) ([]ssh.PublicKey, error) {
 	return nil, errNoLocalKeyStore
 }
@@ -910,6 +877,9 @@ func (noLocalKeyStore) GetTrustedCertsPEM(proxyHost string) ([][]byte, error) {
 	return nil, errNoLocalKeyStore
 }
 func (noLocalKeyStore) GetSSHCertificates(proxyHost, username string) ([]*ssh.Certificate, error) {
+	return nil, errNoLocalKeyStore
+}
+func (noLocalKeyStore) Profile(username string) (*profile.Profile, error) {
 	return nil, errNoLocalKeyStore
 }
 
@@ -1038,6 +1008,317 @@ func (s *MemLocalKeyStore) DeleteUserCerts(idx KeyIndex, opts ...CertOption) err
 func (s *MemLocalKeyStore) GetSSHCertificates(proxyHost, username string) ([]*ssh.Certificate, error) {
 	var sshCerts []*ssh.Certificate
 	for _, key := range s.inMem[proxyHost][username] {
+		sshCert, err := key.SSHCert()
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		sshCerts = append(sshCerts, sshCert)
+	}
+
+	return sshCerts, nil
+}
+
+type AgentRemoteKeyStore struct {
+	noLocalKeyStore
+	agent agent.ExtendedAgent
+}
+
+// NewAgentRemoteKeyStore
+func NewAgentRemoteKeyStore(agent agent.ExtendedAgent) (s *AgentRemoteKeyStore, err error) {
+	// TODO: query supported extenstions to ensure we were handed a valid Teleport extended agent.
+	return &AgentRemoteKeyStore{
+		noLocalKeyStore: noLocalKeyStore{},
+		agent:           agent,
+	}, nil
+}
+
+func (s *AgentRemoteKeyStore) GetKey(idx KeyIndex, opts ...CertOption) (*Key, error) {
+	req := agentIdentityExtensionRequestMsg{
+		Proxy:   idx.ProxyHost,
+		Cluster: idx.ClusterName,
+		User:    idx.Username,
+	}
+
+	// TODO: cache response for future/other calls
+	resp, err := AgentIdentityExtension(s.agent, req)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	sshCert, err := apisshutils.ParseCertificate(resp.SSHCertificate)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	// TODO: create a custom signer that uses s.agent.Sign to prevent extra roundtrip
+	signers, err := s.agent.Signers()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	var signer crypto.Signer
+	for _, s := range signers {
+		if s.PublicKey() == sshCert {
+			priv, err := keys.NewPrivateKey(signer, nil)
+			if err != nil {
+				return nil, trace.Wrap(err)
+			}
+
+			return &Key{
+				PrivateKey: priv,
+				Cert:       resp.SSHCertificate,
+				TLSCert:    resp.TLSCertificate,
+			}, nil
+		}
+	}
+
+	return nil, trace.NotFound("key not found")
+}
+
+// GetKnownHostsFile returns a known hosts file.
+func (s *AgentRemoteKeyStore) GetKnownHostsFile() ([]byte, error) {
+	resp, err := AgentIdentityExtension(s.agent, agentIdentityExtensionRequestMsg{})
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	return resp.KnownHosts, nil
+}
+
+// GetKnownHostKeys returns all known public host keys for the given host name.
+func (s *AgentRemoteKeyStore) GetKnownHostKeys(hostname string) ([]ssh.PublicKey, error) {
+	knownHosts, err := s.GetKnownHostsFile()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	return apisshutils.ParseKnownHosts([][]byte{knownHosts}, hostname)
+}
+
+// GetTrustedCertsPEM gets trusted TLS certificates of certificate authorities.
+// Each returned byte slice contains an individual PEM block.
+func (s *AgentRemoteKeyStore) GetTrustedCertsPEM(proxyHost string) ([][]byte, error) {
+	resp, err := AgentIdentityExtension(s.agent, agentIdentityExtensionRequestMsg{})
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	return resp.TrustedCerts[0].TLSCertificates, nil
+}
+
+// GetSSHCertificates gets all certificates signed for the given user and proxy,
+// including certificates for trusted clusters.
+func (s *AgentRemoteKeyStore) GetSSHCertificates(proxyHost, username string) ([]*ssh.Certificate, error) {
+	agentKeys, err := s.agent.List()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	matchKeyIdx := KeyIndex{
+		ProxyHost: proxyHost,
+		Username:  username,
+	}
+
+	var sshCerts []*ssh.Certificate
+	for _, k := range agentKeys {
+		if keyIdx, ok := parseTeleportAgentKeyComment(k.Comment); ok && keyIdx.Match(matchKeyIdx) {
+			sshPub, err := ssh.ParsePublicKey(k.Blob)
+			if err != nil {
+				return nil, trace.Wrap(err)
+			}
+			if sshCert, ok := sshPub.(*ssh.Certificate); ok {
+				sshCerts = append(sshCerts, sshCert)
+			}
+		}
+	}
+
+	return sshCerts, nil
+}
+
+func (s *AgentRemoteKeyStore) Profile(username string) (*profile.Profile, error) {
+	return ProfileFromAgent(s.agent)
+}
+
+// AddKey adds the given key to the store.
+func (s *AgentRemoteKeyStore) AddKey(key *Key) error {
+	return errNoLocalKeyStore
+}
+
+// DeleteKey deletes the user's key with all its certs.
+func (s *AgentRemoteKeyStore) DeleteKey(idx KeyIndex) error {
+	return errNoLocalKeyStore
+}
+
+// DeleteUserCerts deletes only the specified certs of the user's key,
+// keeping the private key intact.
+func (s *AgentRemoteKeyStore) DeleteUserCerts(idx KeyIndex, opts ...CertOption) error {
+	return errNoLocalKeyStore
+}
+
+// DeleteKeys removes all session keys.
+func (s *AgentRemoteKeyStore) DeleteKeys() error {
+	return errNoLocalKeyStore
+}
+
+// AddKnownHostKeys adds the public key to the list of known hosts for
+// a hostname.
+func (s *AgentRemoteKeyStore) AddKnownHostKeys(hostname, proxyHost string, keys []ssh.PublicKey) error {
+	return errNoLocalKeyStore
+}
+
+// SaveTrustedCerts saves trusted TLS certificates of certificate authorities.
+func (s *AgentRemoteKeyStore) SaveTrustedCerts(proxyHost string, cas []auth.TrustedCerts) error {
+	return errNoLocalKeyStore
+}
+
+type KeyStoreWithCache struct {
+	log      logrus.FieldLogger
+	keyStore KeyStore
+	cache    keyStoreCacheMap
+}
+
+// keyStoreCacheMap is a three-dimensional map indexed by [proxyHost][username][clusterName]
+type keyStoreCacheMap = map[string]map[string]map[string]*Key
+
+func NewKeyStoreWithCache(keyStore KeyStore) (*KeyStoreWithCache, error) {
+	return &KeyStoreWithCache{
+		keyStore: keyStore,
+		cache:    keyStoreCacheMap{},
+		log:      logrus.WithField(trace.Component, teleport.ComponentKeyStore),
+	}, nil
+}
+
+func (s *KeyStoreWithCache) addKeyToCache(key *Key) error {
+	if err := key.KeyIndex.Check(); err != nil {
+		return trace.Wrap(err)
+	}
+	_, ok := s.cache[key.ProxyHost]
+	if !ok {
+		s.cache[key.ProxyHost] = map[string]map[string]*Key{}
+	}
+	_, ok = s.cache[key.ProxyHost][key.Username]
+	if !ok {
+		s.cache[key.ProxyHost][key.Username] = map[string]*Key{}
+	}
+	s.cache[key.ProxyHost][key.Username][key.ClusterName] = key
+	return nil
+}
+
+// AddKey writes a key to the underlying key store.
+func (s *KeyStoreWithCache) AddKey(key *Key) error {
+	// Add the key to the underlying key store, if there is one.
+	if err := s.keyStore.AddKey(key); err != nil && err != errNoLocalKeyStore {
+		return trace.Wrap(err)
+	}
+
+	// Write through to the cache.
+	err := s.addKeyToCache(key)
+	return trace.Wrap(err)
+}
+
+// GetKey returns the user's key including the specified certs.
+func (s *KeyStoreWithCache) GetKey(idx KeyIndex, _ ...CertOption) (*Key, error) {
+	var key *Key
+	if idx.ClusterName == "" {
+		// If clusterName is not specified then the cluster-dependent fields
+		// are not considered relevant and we may simply return any key
+		// associated with any cluster name whatsoever.
+		for _, found := range s.cache[idx.ProxyHost][idx.Username] {
+			key = found
+			break
+		}
+	} else {
+		key = s.cache[idx.ProxyHost][idx.Username][idx.ClusterName]
+	}
+	if key == nil {
+		// Check for the key in the underlying key store. Ignore cert opts since
+		// the cache expects all certs to be loaded.
+		key, err := s.keyStore.GetKey(idx, WithAllCerts...)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		// Write back to the cache.
+		if err := s.addKeyToCache(key); err != nil {
+			return nil, trace.Wrap(err)
+		}
+	}
+
+	// It is not necessary to handle opts because all the optional certs are
+	// already part of the Key struct as stored in memory.
+	tlsCertExpiration, err := key.TeleportTLSCertValidBefore()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	s.log.Debugf("Returning Teleport TLS certificate from memory, valid until %q.", tlsCertExpiration)
+
+	// Validate the SSH certificate.
+	if err := key.CheckCert(); err != nil {
+		if !utils.IsCertExpiredError(err) {
+			return nil, trace.Wrap(err)
+		}
+	}
+
+	return key, nil
+}
+
+// DeleteKey deletes the user's key with all its certs.
+func (s *KeyStoreWithCache) DeleteKey(idx KeyIndex) error {
+	if err := s.keyStore.DeleteKey(idx); err != nil && !trace.IsNotFound(err) && err != errNoLocalKeyStore {
+		return trace.Wrap(err)
+	}
+
+	delete(s.cache[idx.ProxyHost], idx.Username)
+	return nil
+}
+
+// DeleteKeys removes all session keys.
+func (s *KeyStoreWithCache) DeleteKeys() error {
+	if err := s.keyStore.DeleteKeys(); err != nil && !trace.IsNotFound(err) && err != errNoLocalKeyStore {
+		return trace.Wrap(err)
+	}
+
+	s.cache = keyStoreCacheMap{}
+	return nil
+}
+
+// DeleteUserCerts deletes only the specified certs of the user's key,
+// keeping the private key intact.
+// Empty clusterName indicates to delete the certs for all clusters.
+//
+// Useful when needing to log out of a specific service, like a particular
+// database proxy.
+func (s *KeyStoreWithCache) DeleteUserCerts(idx KeyIndex, opts ...CertOption) error {
+	if err := s.keyStore.DeleteUserCerts(idx, opts...); err != nil && !trace.IsNotFound(err) && err != errNoLocalKeyStore {
+		return trace.Wrap(err)
+	}
+
+	var keys []*Key
+	if idx.ClusterName != "" {
+		key, ok := s.cache[idx.ProxyHost][idx.Username][idx.ClusterName]
+		if !ok {
+			return nil
+		}
+		keys = []*Key{key}
+	} else {
+		keys = make([]*Key, 0, len(s.cache[idx.ProxyHost][idx.Username]))
+		for _, key := range s.cache[idx.ProxyHost][idx.Username] {
+			keys = append(keys, key)
+		}
+	}
+
+	for _, key := range keys {
+		for _, o := range opts {
+			o.deleteFromKey(key)
+		}
+	}
+	return nil
+}
+
+// GetSSHCertificates gets all certificates signed for the given user and proxy.
+func (s *KeyStoreWithCache) GetSSHCertificates(proxyHost, username string) ([]*ssh.Certificate, error) {
+	var sshCerts []*ssh.Certificate
+	for _, key := range s.cache[proxyHost][username] {
 		sshCert, err := key.SSHCert()
 		if err != nil {
 			return nil, trace.Wrap(err)

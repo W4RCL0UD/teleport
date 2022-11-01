@@ -30,9 +30,11 @@ import (
 	"github.com/sirupsen/logrus"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
+	"gopkg.in/yaml.v2"
 
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/api/constants"
+	"github.com/gravitational/teleport/api/profile"
 	"github.com/gravitational/teleport/api/utils/sshutils"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/tlsca"
@@ -48,7 +50,7 @@ type LocalKeyAgent struct {
 	agent.ExtendedAgent
 
 	// keyStore is the storage backend for certificates and keys
-	keyStore LocalKeyStore
+	keyStore KeyStore
 
 	// sshAgent is the system ssh agent
 	sshAgent agent.ExtendedAgent
@@ -136,7 +138,7 @@ func shouldAddKeysToAgent(addKeysToAgent string) bool {
 
 // LocalAgentConfig contains parameters for creating the local keys agent.
 type LocalAgentConfig struct {
-	Keystore   LocalKeyStore
+	Keystore   KeyStore
 	Agent      agent.ExtendedAgent
 	ProxyHost  string
 	Username   string
@@ -720,4 +722,114 @@ func (a *LocalKeyAgent) GetClusterNames() ([]string, error) {
 		clusters = append(clusters, cert.Subject.CommonName)
 	}
 	return clusters, nil
+}
+
+const (
+	agentProfileExtension  = "profile@goteleport.com"
+	agentIdentityExtension = "identity@goteleport.com"
+)
+
+type agentProfileExtensionResponseMsg struct {
+	// profileBlob is a yaml encoded profile.Profile.
+	profileBlob []byte
+}
+
+type agentIdentityExtensionRequestMsg struct {
+	KeyBlob []byte
+	Proxy   string
+	Cluster string
+	User    string
+}
+
+type agentIdentityExtensionResponseMsg struct {
+	SSHCertificate []byte
+	TLSCertificate []byte
+	TrustedCerts   []auth.TrustedCerts
+	KnownHosts     []byte
+}
+
+// Extension processes a custom extension request. Standard-compliant agents are not
+// required to support any extensions, but this method allows agents to implement
+// vendor-specific methods or add experimental features. See [PROTOCOL.agent] section 4.7.
+// If agent extensions are unsupported entirely this method MUST return an
+// ErrExtensionUnsupported error. Similarly, if just the specific extensionType in
+// the request is unsupported by the agent then ErrExtensionUnsupported MUST be
+// returned.
+//
+// In the case of success, since [PROTOCOL.agent] section 4.7 specifies that the contents
+// of the response are unspecified (including the type of the message), the complete
+// response will be returned as a []byte slice, including the "type" byte of the message.
+func (a *LocalKeyAgent) Extension(extensionType string, contents []byte) ([]byte, error) {
+	switch extensionType {
+	case agentProfileExtension:
+		profile, err := a.Profile()
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		profileBlob, err := yaml.Marshal(profile)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		return ssh.Marshal(agentProfileExtensionResponseMsg{
+			profileBlob: profileBlob,
+		}), nil
+	case agentIdentityExtension:
+		var req agentIdentityExtensionRequestMsg
+		if err := ssh.Unmarshal(contents, &req); err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		key, err := a.GetKey(req.Cluster)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		knownHosts, err := a.keyStore.GetKnownHostsFile()
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		return ssh.Marshal(agentIdentityExtensionResponseMsg{
+			SSHCertificate: key.Cert,
+			TLSCertificate: key.TLSCert,
+			TrustedCerts:   key.TrustedCA,
+			KnownHosts:     knownHosts,
+		}), nil
+	default:
+		return nil, agent.ErrExtensionUnsupported
+	}
+}
+
+func AgentIdentityExtension(agent agent.ExtendedAgent, req agentIdentityExtensionRequestMsg) (agentIdentityExtensionResponseMsg, error) {
+	respBlob, err := agent.Extension(agentIdentityExtension, ssh.Marshal(req))
+	if err != nil {
+		return agentIdentityExtensionResponseMsg{}, trace.Wrap(err)
+	}
+
+	var resp agentIdentityExtensionResponseMsg
+	if err := ssh.Unmarshal(respBlob, &resp); err != nil {
+		return agentIdentityExtensionResponseMsg{}, trace.Wrap(err)
+	}
+
+	return resp, nil
+}
+
+func ProfileFromAgent(agent agent.ExtendedAgent) (*profile.Profile, error) {
+	profileBlob, err := agent.Extension(agentProfileExtension, nil)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	profile := &profile.Profile{}
+	if err := yaml.Unmarshal(profileBlob, profile); err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	return profile, nil
+}
+
+func (a *LocalKeyAgent) Profile() (*profile.Profile, error) {
+	return a.keyStore.Profile(a.username)
 }
