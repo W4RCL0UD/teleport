@@ -34,6 +34,10 @@ import (
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/service"
 	"github.com/gravitational/teleport/lib/services"
+
+	"github.com/gravitational/teleport/lib/tlsca"
+	"github.com/gravitational/trace"
+	"github.com/jonboulle/clockwork"
 )
 
 // AccessRequestCommand implements `tctl users` set of commands
@@ -264,7 +268,7 @@ func (c *AccessRequestCommand) Create(ctx context.Context, client auth.ClientI) 
 	req.SetRequestReason(c.reason)
 
 	if c.dryRun {
-		err = services.ValidateAccessRequestForUser(ctx, client, req, services.ExpandVars(true))
+		err = services.ValidateAccessRequestForUser(ctx, clockwork.NewFakeClock(), client, req, tlsca.Identity{}, services.ExpandVars(true))
 		if err != nil {
 			return trace.Wrap(err)
 		}
@@ -400,7 +404,8 @@ func printRequestsOverview(reqs []types.AccessRequest, format string) error {
 			"[+]",
 			"Requested resources truncated, use the `tctl requests get` subcommand to view the full list")
 		table.AddColumn(asciitable.Column{Title: "Created At (UTC)"})
-		table.AddColumn(asciitable.Column{Title: "TTL"})
+		table.AddColumn(asciitable.Column{Title: "Pending TTL"})
+		table.AddColumn(asciitable.Column{Title: "Access TTL"})
 		table.AddColumn(asciitable.Column{Title: "Status"})
 		table.AddColumn(asciitable.Column{
 			Title:         "Request Reason",
@@ -428,6 +433,7 @@ func printRequestsOverview(reqs []types.AccessRequest, format string) error {
 				resourceIDsString,
 				req.GetCreationTime().Format(time.RFC822),
 				req.Expiry().Sub(time.Now()).Round(time.Minute).String(),
+				req.GetAccessExpiry().Sub(time.Now()).Round(time.Minute).String(),
 				req.GetState().String(),
 				quoteOrDefault(req.GetRequestReason(), ""),
 				quoteOrDefault(req.GetResolveReason(), ""),

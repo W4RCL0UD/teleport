@@ -143,11 +143,8 @@ type CLIConf struct {
 	ExplicitUsername bool
 	// Proxy keeps the hostname:port of the SSH proxy to use
 	Proxy string
-	// RawTTL is the raw value passed into the "--ttl" flag.
-	RawTTL string
-	// RequestTTL is the parsed value from the "--ttl" flag. Can be a raw
-	// integer representing minutes (like 13) or a Go style time (like 13m1s).
-	TTL time.Duration
+	// TTL defines how long a session must be active (in minutes)
+	MinsToLive int32
 	// SSH Port on a remote SSH host
 	NodePort int32
 	// Login on a remote SSH host
@@ -297,6 +294,14 @@ type CLIConf struct {
 
 	// PreserveAttrs preserves access/modification times from the original file.
 	PreserveAttrs bool
+
+	// PendingTTL is the expiration time of the Access Request (how long it
+	// will await approval).
+	PendingTTL time.Duration
+
+	// AccessTTL is the expiration time for the elevated certificate that will
+	// be issued if the Access Request is approved.
+	AccessTTL time.Duration
 
 	// executablePath is the absolute path to the current executable.
 	executablePath string
@@ -814,6 +819,8 @@ func Run(ctx context.Context, args []string, opts ...cliOption) error {
 	reqCreate.Flag("reviewers", "Suggested reviewers").StringVar(&cf.SuggestedReviewers)
 	reqCreate.Flag("nowait", "Finish without waiting for request resolution").BoolVar(&cf.NoWait)
 	reqCreate.Flag("resource", "Resource ID to be requested").StringsVar(&cf.RequestedResourceIDs)
+	reqCreate.Flag("pending-ttl", "Expiration time for the access request").DurationVar(&cf.PendingTTL)
+	reqCreate.Flag("access-ttl", "Expiration time for the elevated certificate").DurationVar(&cf.AccessTTL)
 
 	reqReview := req.Command("review", "Review an access request")
 	reqReview.Arg("request-id", "ID of target request").Required().StringVar(&cf.RequestID)
@@ -883,13 +890,6 @@ func Run(ctx context.Context, args []string, opts ...cliOption) error {
 			log.Debugf("Failing due to recursive alias %q. Aliases seen: %v", aliasCommand, ar.getSeenAliases())
 			return trace.BadParameter("recursive alias %q; correct alias definition and try again", aliasCommand)
 		}
-	}
-
-	// Parse the raw TTL value as either an integer representing minutes or a
-	// Go style time.Duration.
-	cf.TTL, err = parseTTL(cf.RawTTL)
-	if err != nil {
-		return trace.Wrap(err)
 	}
 
 	// prevent Kingpin from calling os.Exit(), we want to handle errors ourselves.
@@ -1996,9 +1996,13 @@ func createAccessRequest(cf *CLIConf) (types.AccessRequest, error) {
 	}
 	req.SetRequestReason(cf.RequestReason)
 	req.SetSuggestedReviewers(reviewers)
-	if cf.TTL > 0 {
-		req.SetExpiry(time.Now().Add(cf.TTL))
+	if cf.PendingTTL > 0 {
+		req.SetExpiry(time.Now().Add(cf.PendingTTL))
 	}
+	if cf.AccessTTL > 0 {
+		req.SetAccessExpiry(time.Now().Add(cf.AccessTTL))
+	}
+
 	return req, nil
 }
 
@@ -2902,6 +2906,11 @@ func makeClientForProxy(cf *CLIConf, proxy string, useProfileLogin bool) (*clien
 		return nil, trace.Wrap(err)
 	}
 
+	// apply defaults
+	if cf.MinsToLive == 0 {
+		cf.MinsToLive = int32(apidefaults.CertDuration / time.Minute)
+	}
+
 	// split login & host
 	hostLogin := cf.NodeLogin
 	hostUser := cf.UserHost
@@ -3108,14 +3117,9 @@ func makeClientForProxy(cf *CLIConf, proxy string, useProfileLogin bool) (*clien
 	}
 	c.HostPort = int(cf.NodePort)
 	c.Labels = labels
+	c.KeyTTL = time.Minute * time.Duration(cf.MinsToLive)
 	c.InsecureSkipVerify = cf.InsecureSkipVerify
 	c.PredicateExpression = cf.PredicateExpression
-
-	// If no TTL was specified, use default certificate duration.
-	c.KeyTTL = cf.TTL
-	if c.KeyTTL == 0 {
-		c.KeyTTL = apidefaults.CertDuration
-	}
 
 	if cf.SearchKeywords != "" {
 		c.SearchKeywords = client.ParseSearchKeywords(cf.SearchKeywords, ',')
@@ -4205,21 +4209,4 @@ func forEachProfile(cf *CLIConf, fn func(tc *client.TeleportClient, profile *cli
 	}
 
 	return trace.NewAggregate(errors...)
-}
-
-func parseTTL(rawTTL string) (time.Duration, error) {
-	if rawTTL == "" {
-		return 0, nil
-	}
-
-	ttl, err := time.ParseDuration(rawTTL)
-	if err != nil {
-		d, err := strconv.ParseInt(rawTTL, 10, 0)
-		if err != nil {
-			return 0, trace.BadParameter("failed to parse TTL value: %v", err)
-		}
-		ttl = time.Duration(d) * time.Minute
-	}
-
-	return ttl, nil
 }
