@@ -185,7 +185,6 @@ func (d *DBCertGetter) GetCertificateBytes(ctx context.Context) (certPEM, keyPEM
 		ServerName:         d.AdminServerName,
 		CA:                 d.LDAPCA,
 	}, d.Auth)
-
 	if err != nil {
 		return nil, nil, nil, trace.Wrap(err)
 	}
