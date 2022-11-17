@@ -30,11 +30,9 @@ import (
 	"github.com/sirupsen/logrus"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
-	"gopkg.in/yaml.v2"
 
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/api/constants"
-	"github.com/gravitational/teleport/api/profile"
 	"github.com/gravitational/teleport/api/utils/sshutils"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/tlsca"
@@ -272,7 +270,8 @@ func (a *LocalKeyAgent) LoadKey(key Key) error {
 }
 
 // UnloadKey will unload keys matching the given KeyIndex from
-// the teleport ssh agent and the system agent.
+// the teleport ssh agent and the system agent. If an empty KeyIndex
+// is provided, all Teleport agent keys will be unloaded.
 func (a *LocalKeyAgent) UnloadKey(key KeyIndex) error {
 	agents := []agent.Agent{a.ExtendedAgent}
 	if a.sshAgent != nil {
@@ -281,18 +280,15 @@ func (a *LocalKeyAgent) UnloadKey(key KeyIndex) error {
 
 	// iterate over all agents we have and unload keys matching the given key
 	for _, agent := range agents {
-		// get a list of all keys in the agent
-		keyList, err := agent.List()
+		keys, err := GetTeleportAgentKeys(agent, key)
 		if err != nil {
 			a.log.Warnf("Unable to communicate with agent and list keys: %v", err)
+			continue
 		}
 
-		// remove any teleport keys we currently have loaded in the agent for this user and proxy
-		for _, agentKey := range keyList {
-			if agentKeyIdx, ok := parseTeleportAgentKeyComment(agentKey.Comment); ok && agentKeyIdx.Match(key) {
-				if err = agent.Remove(agentKey); err != nil {
-					a.log.Warnf("Unable to communicate with agent and remove key: %v", err)
-				}
+		for _, key := range keys {
+			if err = agent.Remove(key); err != nil {
+				a.log.Warnf("Unable to communicate with agent and remove key: %v", err)
 			}
 		}
 	}
@@ -300,33 +296,28 @@ func (a *LocalKeyAgent) UnloadKey(key KeyIndex) error {
 	return nil
 }
 
-// UnloadKeys will unload all Teleport keys from the teleport agent as well as
-// the system agent.
+// UnloadKeys will unload all Teleport agent keys from
+// the teleport ssh agent and the system agent
 func (a *LocalKeyAgent) UnloadKeys() error {
-	agents := []agent.ExtendedAgent{a.ExtendedAgent}
-	if a.sshAgent != nil {
-		agents = append(agents, a.sshAgent)
+	return a.UnloadKey(KeyIndex{})
+}
+
+// GetTeleportAgentKeys returns all teleport agent keys from the given agent. If a non-empty
+// matchKey is provided, only agent keys that match the given key will be returned.
+func GetTeleportAgentKeys(a agent.Agent, matchKey KeyIndex) ([]*agent.Key, error) {
+	keyList, err := a.List()
+	if err != nil {
+		return nil, trace.Wrap(err)
 	}
 
-	// iterate over all agents we have and unload keys
-	for _, agent := range agents {
-		// get a list of all keys in the agent
-		keyList, err := agent.List()
-		if err != nil {
-			a.log.Warnf("Unable to communicate with agent and list keys: %v", err)
-		}
-
-		// remove any teleport keys we currently have loaded in the agent
-		for _, key := range keyList {
-			if isTeleportAgentKey(key) {
-				if err = agent.Remove(key); err != nil {
-					a.log.Warnf("Unable to communicate with agent and remove key: %v", err)
-				}
-			}
+	var teleportKeyList []*agent.Key
+	for _, key := range keyList {
+		if idx, ok := parseTeleportAgentKeyComment(key.Comment); ok && idx.Match(matchKey) {
+			teleportKeyList = append(teleportKeyList, key)
 		}
 	}
 
-	return nil
+	return teleportKeyList, nil
 }
 
 // GetKey returns the key for the given cluster of the proxy from
@@ -724,30 +715,6 @@ func (a *LocalKeyAgent) GetClusterNames() ([]string, error) {
 	return clusters, nil
 }
 
-const (
-	agentProfileExtension  = "profile@goteleport.com"
-	agentIdentityExtension = "identity@goteleport.com"
-)
-
-type agentProfileExtensionResponseMsg struct {
-	// profileBlob is a yaml encoded profile.Profile.
-	profileBlob []byte
-}
-
-type agentIdentityExtensionRequestMsg struct {
-	KeyBlob []byte
-	Proxy   string
-	Cluster string
-	User    string
-}
-
-type agentIdentityExtensionResponseMsg struct {
-	SSHCertificate []byte
-	TLSCertificate []byte
-	TrustedCerts   []auth.TrustedCerts
-	KnownHosts     []byte
-}
-
 // Extension processes a custom extension request. Standard-compliant agents are not
 // required to support any extensions, but this method allows agents to implement
 // vendor-specific methods or add experimental features. See [PROTOCOL.agent] section 4.7.
@@ -761,29 +728,40 @@ type agentIdentityExtensionResponseMsg struct {
 // response will be returned as a []byte slice, including the "type" byte of the message.
 func (a *LocalKeyAgent) Extension(extensionType string, contents []byte) ([]byte, error) {
 	switch extensionType {
-	case agentProfileExtension:
-		profile, err := a.Profile()
+	case agentExtensionListKeys:
+		var resp listKeysResponse
+		var err error
+
+		resp.KnownHosts, err = a.keyStore.GetKnownHostsFile()
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
 
-		profileBlob, err := yaml.Marshal(profile)
+		agentKeys, err := GetTeleportAgentKeys(a.ExtendedAgent, KeyIndex{})
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
 
-		return ssh.Marshal(agentProfileExtensionResponseMsg{
-			profileBlob: profileBlob,
-		}), nil
-	case agentIdentityExtension:
-		var req agentIdentityExtensionRequestMsg
-		if err := ssh.Unmarshal(contents, &req); err != nil {
-			return nil, trace.Wrap(err)
-		}
+		for _, agentKey := range agentKeys {
+			idx, _ := parseTeleportAgentKeyComment(agentKey.Comment)
+			key, err := a.GetKey(idx.ClusterName, WithSSHCerts{})
+			if trace.IsNotFound(err) {
+				// the key is for a different proxy/user and cannot
+				// be loaded with the current local agent.
+				// TODO: allow the key agent to load other keys?
+				continue
+			} else if err != nil {
+				return nil, trace.Wrap(err)
+			}
 
-		key, err := a.GetKey(req.Cluster)
-		if err != nil {
-			return nil, trace.Wrap(err)
+			resp.Keys = append(resp.Keys, teleportAgentKey{
+				ProxyHost:      key.ProxyHost,
+				ClusterName:    key.ClusterName,
+				Username:       key.Username,
+				SSHCertificate: key.Cert,
+				TLSCertificate: key.TLSCert,
+				TrustedCerts:   key.TrustedCA,
+			})
 		}
 
 		knownHosts, err := a.keyStore.GetKnownHostsFile()
@@ -791,45 +769,44 @@ func (a *LocalKeyAgent) Extension(extensionType string, contents []byte) ([]byte
 			return nil, trace.Wrap(err)
 		}
 
-		return ssh.Marshal(agentIdentityExtensionResponseMsg{
-			SSHCertificate: key.Cert,
-			TLSCertificate: key.TLSCert,
-			TrustedCerts:   key.TrustedCA,
-			KnownHosts:     knownHosts,
+		return ssh.Marshal(listKeysResponse{
+			Keys:       []teleportAgentKey{},
+			KnownHosts: knownHosts,
 		}), nil
 	default:
 		return nil, agent.ErrExtensionUnsupported
 	}
 }
 
-func AgentIdentityExtension(agent agent.ExtendedAgent, req agentIdentityExtensionRequestMsg) (agentIdentityExtensionResponseMsg, error) {
-	respBlob, err := agent.Extension(agentIdentityExtension, ssh.Marshal(req))
+const (
+	// The list-keys@goteleport.com extensions returns a list of Teleport
+	// client keys for each Teleport agent key loaded into the current agent.
+	agentExtensionListKeys = "list-keys@goteleport.com"
+)
+
+type listKeysResponse struct {
+	Keys       []teleportAgentKey
+	KnownHosts []byte
+}
+
+type teleportAgentKey struct {
+	ProxyHost      string
+	ClusterName    string
+	Username       string
+	SSHCertificate []byte
+	TLSCertificate []byte
+	TrustedCerts   []auth.TrustedCerts
+}
+
+func ListKeysExtension(agent agent.ExtendedAgent) (resp listKeysResponse, err error) {
+	respBlob, err := agent.Extension(agentExtensionListKeys, nil)
 	if err != nil {
-		return agentIdentityExtensionResponseMsg{}, trace.Wrap(err)
+		return resp, trace.Wrap(err)
 	}
 
-	var resp agentIdentityExtensionResponseMsg
 	if err := ssh.Unmarshal(respBlob, &resp); err != nil {
-		return agentIdentityExtensionResponseMsg{}, trace.Wrap(err)
+		return resp, trace.Wrap(err)
 	}
 
 	return resp, nil
-}
-
-func ProfileFromAgent(agent agent.ExtendedAgent) (*profile.Profile, error) {
-	profileBlob, err := agent.Extension(agentProfileExtension, nil)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	profile := &profile.Profile{}
-	if err := yaml.Unmarshal(profileBlob, profile); err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	return profile, nil
-}
-
-func (a *LocalKeyAgent) Profile() (*profile.Profile, error) {
-	return a.keyStore.Profile(a.username)
 }
