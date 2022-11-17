@@ -19,7 +19,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -54,6 +53,8 @@ const (
   pkinit_eku_checking = kpServerAuth
   pkinit_kdc_hostname = {{ .KDCHostName }}
  }`
+	// certTTL is the certificate time to live; 1 hour
+	certTTL = time.Minute * 60
 )
 
 // Provider is a kinit provider capable of producing a credentials cache for kerberos
@@ -151,7 +152,7 @@ type CommandLineInitializer struct {
 // CertGetter is an interface for getting a new cert/key pair along with a CA cert
 type CertGetter interface {
 	// GetCertificateBytes returns a new cert/key pair along with a CA for use with x509 Auth
-	GetCertificateBytes(ctx context.Context) (certPEM, keyPEM, caCert []byte, err error)
+	GetCertificateBytes(ctx context.Context) (*WindowsCAAndKeyPair, error)
 }
 
 // DBCertGetter obtains a new cert/key pair along with the Teleport database CA
@@ -170,14 +171,20 @@ type DBCertGetter struct {
 	LDAPCA *x509.Certificate
 }
 
+type WindowsCAAndKeyPair struct {
+	certPEM []byte
+	keyPEM  []byte
+	caCert  []byte
+}
+
 // GetCertificateBytes returns a new cert/key pem and the DB CA bytes
-func (d *DBCertGetter) GetCertificateBytes(ctx context.Context) (certPEM, keyPEM, caCert []byte, err error) {
+func (d *DBCertGetter) GetCertificateBytes(ctx context.Context) (*WindowsCAAndKeyPair, error) {
 	clusterName, err := d.Auth.GetClusterName()
 	if err != nil {
-		return nil, nil, nil, trace.Wrap(err)
+		return nil, trace.Wrap(err)
 	}
 
-	certPEM, keyPEM, err = windows.CertKeyPEM(ctx, d.UserName, d.RealmName, time.Second*60*60, clusterName.GetClusterName(), windows.LDAPConfig{
+	certPEM, keyPEM, err := windows.CertKeyPEM(ctx, d.UserName, d.RealmName, certTTL, clusterName.GetClusterName(), windows.LDAPConfig{
 		Addr:               d.KDCHostName,
 		Domain:             d.RealmName,
 		Username:           d.UserName,
@@ -186,7 +193,7 @@ func (d *DBCertGetter) GetCertificateBytes(ctx context.Context) (certPEM, keyPEM
 		CA:                 d.LDAPCA,
 	}, d.Auth)
 	if err != nil {
-		return nil, nil, nil, trace.Wrap(err)
+		return nil, trace.Wrap(err)
 	}
 
 	dbCA, err := d.Auth.GetCertAuthority(ctx, types.CertAuthID{
@@ -194,9 +201,10 @@ func (d *DBCertGetter) GetCertificateBytes(ctx context.Context) (certPEM, keyPEM
 		DomainName: clusterName.GetClusterName(),
 	}, true)
 	if err != nil {
-		return nil, nil, nil, trace.Wrap(err)
+		return nil, trace.Wrap(err)
 	}
 
+	var caCert []byte
 	keyPairs := dbCA.GetActiveKeys().TLS
 	for _, keyPair := range keyPairs {
 		if keyPair.KeyType == types.PrivateKeyType_RAW {
@@ -205,10 +213,10 @@ func (d *DBCertGetter) GetCertificateBytes(ctx context.Context) (certPEM, keyPEM
 	}
 
 	if caCert == nil {
-		return nil, nil, nil, trace.Wrap(errors.New("no certificate authority was found in userCA active keys"))
+		return nil, trace.BadParameter("no certificate authority was found in userCA active keys")
 	}
 
-	return
+	return &WindowsCAAndKeyPair{certPEM: certPEM, keyPEM: keyPEM, caCert: caCert}, nil
 }
 
 // UseOrCreateCredentials uses an existing cache or creates a new one
@@ -238,25 +246,23 @@ func (k *CommandLineInitializer) UseOrCreateCredentials(ctx context.Context) (*c
 
 	cachePath := filepath.Join(cacheDir, k.cacheName)
 
-	var certPEM, keyPEM, caCert []byte
-
-	certPEM, keyPEM, caCert, err = k.certGetter.GetCertificateBytes(ctx)
+	wca, err := k.certGetter.GetCertificateBytes(ctx)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
 	// store files in temp dir
-	err = os.WriteFile(certPath, certPEM, 0644)
+	err = os.WriteFile(certPath, wca.certPEM, 0644)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
-	err = os.WriteFile(keyPath, keyPEM, 0644)
+	err = os.WriteFile(keyPath, wca.keyPEM, 0644)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
-	err = os.WriteFile(userCAPath, caCert, 0644)
+	err = os.WriteFile(userCAPath, wca.caCert, 0644)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -278,7 +284,7 @@ func (k *CommandLineInitializer) UseOrCreateCredentials(ctx context.Context) (*c
 	}
 
 	cmd.Env = append(cmd.Env, []string{fmt.Sprintf("%s=%s", krb5ConfigEnv, krbConfPath)}...)
-	_, err = cmd.CombinedOutput()
+	err = cmd.Run()
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}

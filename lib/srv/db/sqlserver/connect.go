@@ -18,7 +18,6 @@ package sqlserver
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net"
 	"strconv"
@@ -47,6 +46,25 @@ type connector struct {
 	AuthClient auth.ClientI
 	// DataDir is the Teleport data directory
 	DataDir string
+}
+
+func (c *connector) getKerberosClient(ctx context.Context, sessionCtx *common.Session) (*client.Client, error) {
+	var kt *client.Client
+	var err error
+	if sessionCtx.Database.GetAD().KeytabFile != "" {
+		kt, err = keytabClient(sessionCtx)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+	} else if sessionCtx.Database.GetAD().KDCHostName != "" && sessionCtx.Database.GetAD().LDAPCert != "" {
+		kt, err = kinitClient(ctx, sessionCtx, c.AuthClient, c.DataDir)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+	} else {
+		return nil, trace.BadParameter("configuration must have either keytab or kdc_host_name and ldap_cert")
+	}
+	return kt, nil
 }
 
 // Connect connects to the target SQL Server with Kerberos authentication.
@@ -101,27 +119,16 @@ func (c *connector) Connect(ctx context.Context, sessionCtx *common.Session, log
 			return nil, nil, trace.Wrap(err)
 		}
 	} else {
-		var kt *client.Client
-		if sessionCtx.Database.GetAD().KeytabFile != "" {
-			kt, err = keytabClient(sessionCtx)
-			if err != nil {
-				return nil, nil, trace.Wrap(err)
-			}
-		} else if sessionCtx.Database.GetAD().KDCHostName != "" && sessionCtx.Database.GetAD().LDAPCert != "" {
-			kt, err = kinitClient(ctx, sessionCtx, c.AuthClient, c.DataDir)
-			if err != nil {
-				return nil, nil, trace.Wrap(err)
-			}
-		} else {
-			return nil, nil, trace.Wrap(fmt.Errorf("configuration must have either keytab or kdc_host_name and ldap_cert"))
+		kc, err := c.getKerberosClient(ctx, sessionCtx)
+		if err != nil {
+			return nil, nil, trace.Wrap(err)
 		}
-
-		auth, err := c.getAuth(sessionCtx, kt)
+		a, err := c.getAuth(sessionCtx, kc)
 		if err != nil {
 			return nil, nil, trace.Wrap(err)
 		}
 
-		connector = mssql.NewConnectorConfig(dsnConfig, auth)
+		connector = mssql.NewConnectorConfig(dsnConfig, a)
 	}
 
 	conn, err := connector.Connect(ctx)

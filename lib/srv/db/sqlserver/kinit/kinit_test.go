@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-//go:embed kinit.cache
+//go:embed testdata/kinit.cache
 var cache []byte
 
 type staticCache struct {
@@ -39,54 +39,54 @@ type testCertGetter struct {
 	pass bool
 }
 
-func (t *testCertGetter) GetCertificateBytes(context.Context) ([]byte, []byte, []byte, error) {
+func (t *testCertGetter) GetCertificateBytes(context.Context) (*WindowsCAAndKeyPair, error) {
 	if t.pass {
-		return nil, nil, nil, nil
+		return &WindowsCAAndKeyPair{}, nil
 	}
-	return nil, nil, nil, errors.New("could not get cert bytes")
+	return nil, errors.New("could not get cert bytes")
 
 }
 
-type testStep struct {
-	initializer *PKInit
-	expectErr   func(t require.TestingT, err error, msgAndArgs ...interface{})
-	expectNil   func(t require.TestingT, object interface{}, msgAndArgs ...interface{})
-	post        func() error
+type testCase struct {
+	name           string
+	initializer    *PKInit
+	expectErr      func(t require.TestingT, err error, msgAndArgs ...interface{})
+	expectCacheNil func(t require.TestingT, object interface{}, msgAndArgs ...interface{})
 }
 
-func step(s *staticCache, c *testCertGetter, expectErr func(t require.TestingT, err error, msgAndArgs ...interface{}), expectNil func(t require.TestingT, object interface{}, msgAndArgs ...interface{})) *testStep {
-	dir, err := os.MkdirTemp("", "krb5_cache")
+func step(t *testing.T, name string, s *staticCache, c *testCertGetter, expectErr func(t require.TestingT, err error, msgAndArgs ...interface{}), expectNil func(t require.TestingT, object interface{}, msgAndArgs ...interface{})) *testCase {
+	dir := t.TempDir()
+	var err error
+	dir, err = os.MkdirTemp(dir, "krb5_cache")
 	require.NoError(s.t, err)
 
-	return &testStep{
+	return &testCase{
+		name: name,
 		initializer: New(NewCommandLineInitializerWithCommand(nil,
 			"alice",
 			"example.com",
 			"host.example.com",
 			"host.example.com",
 			dir, nil, s, c)),
-		expectErr: expectErr,
-		expectNil: expectNil,
-		post: func() error {
-			return os.RemoveAll(dir)
-		},
+		expectErr:      expectErr,
+		expectCacheNil: expectNil,
 	}
 }
 
 func TestNewWithCommandLineProvider(t *testing.T) {
 
-	steps := []*testStep{
-		step(&staticCache{t: t, pass: true}, &testCertGetter{pass: true}, require.NoError, require.NotNil),
-		step(&staticCache{t: t, pass: true}, &testCertGetter{pass: false}, require.Error, require.Nil),
-		step(&staticCache{t: t, pass: false}, &testCertGetter{pass: true}, require.Error, require.Nil),
-		step(&staticCache{t: t, pass: false}, &testCertGetter{pass: false}, require.Error, require.Nil),
+	cases := []*testCase{
+		step(t, "TestKInitCommandSuccessCase", &staticCache{t: t, pass: true}, &testCertGetter{pass: true}, require.NoError, require.NotNil),
+		step(t, "TestKInitCertificateFailureCase", &staticCache{t: t, pass: true}, &testCertGetter{pass: false}, require.Error, require.Nil),
+		step(t, "TestKInitCommandFailureCase", &staticCache{t: t, pass: false}, &testCertGetter{pass: true}, require.Error, require.Nil),
 	}
 
-	for _, s := range steps {
-		cc, err := s.initializer.UseOrCreateCredentialsCache(context.Background())
-		s.expectErr(t, err)
-		s.expectNil(t, cc)
-		require.NoError(t, s.post())
+	for _, c := range cases {
+		require.True(t, t.Run(c.name, func(t *testing.T) {
+			cc, err := c.initializer.UseOrCreateCredentialsCache(context.Background())
+			c.expectErr(t, err)
+			c.expectCacheNil(t, cc)
+		}))
 	}
 
 }

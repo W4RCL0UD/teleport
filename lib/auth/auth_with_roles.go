@@ -5039,11 +5039,11 @@ func (a *ServerWithRoles) checkAccessToWindowsDesktop(w types.WindowsDesktop) er
 	)
 }
 
-// GenerateWindowsDesktopCert generates a certificate for Windows RDP
+// GenerateWindowsDesktopCert generates a certificate for Windows RDP or SQL Server
 // authentication.
 func (a *ServerWithRoles) GenerateWindowsDesktopCert(ctx context.Context, req *proto.WindowsDesktopCertRequest) (*proto.WindowsDesktopCertResponse, error) {
-	// Only windows_desktop_service should be requesting Windows certificates.
-	if !a.hasBuiltinRole(types.RoleWindowsDesktop) {
+	// Only windows_desktop_service or database_service should be requesting Windows certificates.
+	if !a.hasBuiltinRole(types.RoleWindowsDesktop) || !a.hasBuiltinRole(types.RoleDatabase) {
 		return nil, trace.AccessDenied("access denied")
 	}
 	return a.authServer.GenerateWindowsDesktopCert(ctx, req)
