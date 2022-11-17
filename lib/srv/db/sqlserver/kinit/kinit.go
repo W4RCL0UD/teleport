@@ -222,7 +222,7 @@ func (k *CommandLineInitializer) UseOrCreateCredentials(ctx context.Context) (*c
 	defer func() {
 		err = os.RemoveAll(tmp)
 		if err != nil {
-			k.log.Error(err)
+			k.log.WithError(err).Error("Failed to clear up kinit temporary directory)
 		}
 	}()
 
