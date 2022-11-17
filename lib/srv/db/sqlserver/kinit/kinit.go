@@ -310,5 +310,5 @@ func (k *CommandLineInitializer) WriteKRB5Config(path string) error {
 		return trace.Wrap(err)
 	}
 
-	return trace.Wrap(os.WriteFile(path, []byte(s), 0644))
+	return trace.ConvertSystemError(os.WriteFile(path, []byte(s), 0644))
 }
