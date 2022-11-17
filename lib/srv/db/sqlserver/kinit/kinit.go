@@ -57,9 +57,9 @@ const (
 	certTTL = time.Minute * 60
 )
 
-// Provider is a kinit provider capable of producing a credentials cache for kerberos
+// Provider is a kinit provider capable of producing a credentials cacheData for kerberos
 type Provider interface {
-	// UseOrCreateCredentials uses or updates an existing cache or creates a new one
+	// UseOrCreateCredentials uses or updates an existing cacheData or creates a new one
 	UseOrCreateCredentials(ctx context.Context) (cache *credentials.CCache, err error)
 }
 
@@ -68,7 +68,7 @@ type PKInit struct {
 	provider Provider
 }
 
-// UseOrCreateCredentialsCache uses or creates a credentials cache.
+// UseOrCreateCredentialsCache uses or creates a credentials cacheData.
 func (k *PKInit) UseOrCreateCredentialsCache(ctx context.Context) (*credentials.CCache, error) {
 	return k.provider.UseOrCreateCredentials(ctx)
 }
@@ -192,6 +192,7 @@ func (d *DBCertGetter) GetCertificateBytes(ctx context.Context) (*WindowsCAAndKe
 		ServerName:         d.AdminServerName,
 		CA:                 d.LDAPCA,
 	}, d.Auth)
+
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -219,7 +220,7 @@ func (d *DBCertGetter) GetCertificateBytes(ctx context.Context) (*WindowsCAAndKe
 	return &WindowsCAAndKeyPair{certPEM: certPEM, keyPEM: keyPEM, caCert: caCert}, nil
 }
 
-// UseOrCreateCredentials uses an existing cache or creates a new one
+// UseOrCreateCredentials uses an existing cacheData or creates a new one
 func (k *CommandLineInitializer) UseOrCreateCredentials(ctx context.Context) (*credentials.CCache, error) {
 	tmp, err := os.MkdirTemp("", "kinit")
 	if err != nil {
@@ -229,7 +230,7 @@ func (k *CommandLineInitializer) UseOrCreateCredentials(ctx context.Context) (*c
 	defer func() {
 		err = os.RemoveAll(tmp)
 		if err != nil {
-			k.log.WithError(err).Error("Failed to clear up kinit temporary directory)
+			k.log.Error(err)
 		}
 	}()
 
@@ -315,5 +316,5 @@ func (k *CommandLineInitializer) WriteKRB5Config(path string) error {
 		return trace.Wrap(err)
 	}
 
-	return trace.ConvertSystemError(os.WriteFile(path, []byte(s), 0644))
+	return trace.Wrap(os.WriteFile(path, []byte(s), 0644))
 }

@@ -13,17 +13,31 @@ import (
 )
 
 //go:embed testdata/kinit.cache
-var cache []byte
+var cacheData []byte
+var badCacheData = []byte("bad cache data to write to file")
 
 type staticCache struct {
 	t    *testing.T
 	pass bool
 }
 
+type badCache struct {
+	t *testing.T
+}
+
+func (b *badCache) CommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cachePath := args[len(args)-1]
+	require.NotEmpty(b.t, cachePath)
+	err := os.WriteFile(cachePath, badCacheData, 0664)
+	require.NoError(b.t, err)
+
+	return exec.Command("echo")
+}
+
 func (s *staticCache) CommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
 	cachePath := args[len(args)-1]
 	require.NotEmpty(s.t, cachePath)
-	err := os.WriteFile(cachePath, cache, 0664)
+	err := os.WriteFile(cachePath, cacheData, 0664)
 	require.NoError(s.t, err)
 
 	if s.pass {
@@ -54,11 +68,11 @@ type testCase struct {
 	expectCacheNil func(t require.TestingT, object interface{}, msgAndArgs ...interface{})
 }
 
-func step(t *testing.T, name string, s *staticCache, c *testCertGetter, expectErr func(t require.TestingT, err error, msgAndArgs ...interface{}), expectNil func(t require.TestingT, object interface{}, msgAndArgs ...interface{})) *testCase {
+func step(t *testing.T, name string, cg commandGenerator, c *testCertGetter, expectErr func(t require.TestingT, err error, msgAndArgs ...interface{}), expectNil func(t require.TestingT, object interface{}, msgAndArgs ...interface{})) *testCase {
 	dir := t.TempDir()
 	var err error
 	dir, err = os.MkdirTemp(dir, "krb5_cache")
-	require.NoError(s.t, err)
+	require.NoError(t, err)
 
 	return &testCase{
 		name: name,
@@ -67,7 +81,7 @@ func step(t *testing.T, name string, s *staticCache, c *testCertGetter, expectEr
 			"example.com",
 			"host.example.com",
 			"host.example.com",
-			dir, nil, s, c)),
+			dir, nil, cg, c)),
 		expectErr:      expectErr,
 		expectCacheNil: expectNil,
 	}
@@ -76,9 +90,12 @@ func step(t *testing.T, name string, s *staticCache, c *testCertGetter, expectEr
 func TestNewWithCommandLineProvider(t *testing.T) {
 
 	cases := []*testCase{
-		step(t, "TestKInitCommandSuccessCase", &staticCache{t: t, pass: true}, &testCertGetter{pass: true}, require.NoError, require.NotNil),
-		step(t, "TestKInitCertificateFailureCase", &staticCache{t: t, pass: true}, &testCertGetter{pass: false}, require.Error, require.Nil),
-		step(t, "TestKInitCommandFailureCase", &staticCache{t: t, pass: false}, &testCertGetter{pass: true}, require.Error, require.Nil),
+		step(t, "TestCommandSuccessCase", &staticCache{t: t, pass: true}, &testCertGetter{pass: true}, require.NoError, require.NotNil),
+		step(t, "TestCertificateFailureCase", &staticCache{t: t, pass: true}, &testCertGetter{pass: false}, require.Error, require.Nil),
+		step(t, "TestCommandFailureCase", &staticCache{t: t, pass: false}, &testCertGetter{pass: true}, require.Error, require.Nil),
+		// Final case returns an error along with a non nil credentials cache that essentially has all zeroed fields;
+		// &credentials.CCache{Version:0x0, Header:credentials.header{length:0x0, fields:[]credentials.headerField(nil)}, DefaultPrincipal:credentials.principal{Realm:"", PrincipalName:types.PrincipalName{NameType:0, NameString:[]string(nil)}}, Credentials:[]*credentials.Credential(nil), Path:""}
+		step(t, "TestBadCacheData", &badCache{t: t}, &testCertGetter{pass: true}, require.Error, require.NotNil),
 	}
 
 	for _, c := range cases {
