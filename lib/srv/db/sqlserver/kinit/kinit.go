@@ -171,6 +171,7 @@ type DBCertGetter struct {
 	LDAPCA *x509.Certificate
 }
 
+// WindowsCAAndKeyPair is a wrapper around PEM bytes for Windows authentication
 type WindowsCAAndKeyPair struct {
 	certPEM []byte
 	keyPEM  []byte
