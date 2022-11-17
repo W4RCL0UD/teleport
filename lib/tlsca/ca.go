@@ -173,6 +173,9 @@ type Identity struct {
 	AllowedResourceIDs []types.ResourceID
 	// PrivateKeyPolicy is the private key policy supported by this identity.
 	PrivateKeyPolicy keys.PrivateKeyPolicy
+
+	// ConnectionDiagnosticID is used to add connection diagnostic messages when Testing a Connection.
+	ConnectionDiagnosticID string
 }
 
 // RouteToApp holds routing information for applications.
@@ -407,6 +410,11 @@ var (
 	// system role, and use `pkix.Name.Organization` to encode this value. This extension
 	// is specifically used for "multi-role" certs.
 	SystemRolesASN1ExtensionOID = asn1.ObjectIdentifier{1, 3, 9999, 2, 11}
+
+	// ConnectionDiagnosticIDASN1ExtensionOID is an extension OID used to indicate the Connection Diagnostic ID.
+	// When using the Test Connection feature, there's propagation of the ConnectionDiagnosticID.
+	// Each service (ex DB Agent) uses that to add checkpoints describing if it was a success or a failure.
+	ConnectionDiagnosticIDASN1ExtensionOID = asn1.ObjectIdentifier{1, 3, 9999, 2, 12}
 )
 
 // Subject converts identity to X.509 subject name
@@ -638,6 +646,15 @@ func (id *Identity) Subject() (pkix.Name, error) {
 		)
 	}
 
+	if id.ConnectionDiagnosticID != "" {
+		subject.ExtraNames = append(subject.ExtraNames,
+			pkix.AttributeTypeAndValue{
+				Type:  ConnectionDiagnosticIDASN1ExtensionOID,
+				Value: id.ConnectionDiagnosticID,
+			},
+		)
+	}
+
 	return subject, nil
 }
 
@@ -801,6 +818,11 @@ func FromSubject(subject pkix.Name, expires time.Time) (*Identity, error) {
 			val, ok := attr.Value.(string)
 			if ok {
 				id.PrivateKeyPolicy = keys.PrivateKeyPolicy(val)
+			}
+		case attr.Type.Equal(ConnectionDiagnosticIDASN1ExtensionOID):
+			val, ok := attr.Value.(string)
+			if ok {
+				id.ConnectionDiagnosticID = val
 			}
 		}
 	}
