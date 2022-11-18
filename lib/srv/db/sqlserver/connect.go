@@ -18,6 +18,7 @@ package sqlserver
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"strconv"
@@ -48,6 +49,8 @@ type connector struct {
 	DataDir string
 }
 
+var badKerberosConfig = errors.New("configuration must have either keytab or kdc_host_name and ldap_cert")
+
 func (c *connector) getKerberosClient(ctx context.Context, sessionCtx *common.Session) (*client.Client, error) {
 	var kt *client.Client
 	var err error
@@ -62,7 +65,7 @@ func (c *connector) getKerberosClient(ctx context.Context, sessionCtx *common.Se
 			return nil, trace.Wrap(err)
 		}
 	} else {
-		return nil, trace.BadParameter("configuration must have either keytab or kdc_host_name and ldap_cert")
+		return nil, trace.Wrap(badKerberosConfig)
 	}
 	return kt, nil
 }

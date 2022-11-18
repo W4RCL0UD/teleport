@@ -16,7 +16,6 @@ package sqlserver
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -54,7 +53,7 @@ func TestConnectorSelection(t *testing.T) {
 			// loading Kerberos credentials.
 			errAssertion: func(t require.TestingT, err error, _ ...interface{}) {
 				require.Error(t, err)
-				require.ErrorIs(t, err, os.ErrNotExist)
+				require.ErrorIs(t, err, badKerberosConfig)
 			},
 		},
 		{
@@ -71,7 +70,7 @@ func TestConnectorSelection(t *testing.T) {
 			// should fail loading Kerberos credentials.
 			errAssertion: func(t require.TestingT, err error, _ ...interface{}) {
 				require.Error(t, err)
-				require.ErrorIs(t, err, os.ErrNotExist)
+				require.ErrorIs(t, err, badKerberosConfig)
 			},
 		},
 		{
