@@ -49,7 +49,7 @@ type connector struct {
 	DataDir string
 }
 
-var badKerberosConfig = errors.New("configuration must have either keytab or kdc_host_name and ldap_cert")
+var errBadKerberosConfig = errors.New("configuration must have either keytab or kdc_host_name and ldap_cert")
 
 func (c *connector) getKerberosClient(ctx context.Context, sessionCtx *common.Session) (*client.Client, error) {
 	var kt *client.Client
