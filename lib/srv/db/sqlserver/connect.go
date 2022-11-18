@@ -65,7 +65,7 @@ func (c *connector) getKerberosClient(ctx context.Context, sessionCtx *common.Se
 			return nil, trace.Wrap(err)
 		}
 	} else {
-		return nil, trace.Wrap(badKerberosConfig)
+		return nil, trace.Wrap(errBadKerberosConfig)
 	}
 	return kt, nil
 }

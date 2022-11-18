@@ -53,7 +53,7 @@ func TestConnectorSelection(t *testing.T) {
 			// loading Kerberos credentials.
 			errAssertion: func(t require.TestingT, err error, _ ...interface{}) {
 				require.Error(t, err)
-				require.ErrorIs(t, err, badKerberosConfig)
+				require.ErrorIs(t, err, errBadKerberosConfig)
 			},
 		},
 		{
@@ -70,7 +70,7 @@ func TestConnectorSelection(t *testing.T) {
 			// should fail loading Kerberos credentials.
 			errAssertion: func(t require.TestingT, err error, _ ...interface{}) {
 				require.Error(t, err)
-				require.ErrorIs(t, err, badKerberosConfig)
+				require.ErrorIs(t, err, errBadKerberosConfig)
 			},
 		},
 		{
