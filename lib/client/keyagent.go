@@ -779,7 +779,7 @@ func (a *LocalKeyAgent) Extension(extensionType string, contents []byte) ([]byte
 }
 
 const (
-	// The list-keys@goteleport.com extensions returns a list of Teleport
+	// The list-keys@goteleport.com extension returns a list of Teleport
 	// client keys for each Teleport agent key loaded into the current agent.
 	agentExtensionListKeys = "list-keys@goteleport.com"
 )
