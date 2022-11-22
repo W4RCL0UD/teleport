@@ -21,6 +21,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509/pkix"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -33,6 +34,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/api/utils/keypaths"
@@ -666,4 +668,79 @@ func TestMemLocalKeyStore(t *testing.T) {
 	retrievedKey, err = keystore.GetKey(idx)
 	require.Error(t, err)
 	require.Nil(t, retrievedKey)
+}
+
+func TestAgentRemoteKeyStore(t *testing.T) {
+	s, cleanup := newTest(t)
+	defer cleanup()
+
+	// create keystore
+	dir := t.TempDir()
+	localKeystore, err := NewFSLocalKeyStore(dir)
+	require.NoError(t, err)
+
+	// Prepare a local agent to provide agent keys and keystore extensions
+	localAgent, err := NewLocalAgent(LocalAgentConfig{
+		Keystore:   localKeystore,
+		ProxyHost:  "test.com",
+		Site:       "root",
+		Username:   "test",
+		KeysOption: AddKeysToAgentNo,
+	})
+	require.NoError(t, err)
+
+	// create a test key
+	idx := KeyIndex{
+		ProxyHost:   localAgent.proxyHost,
+		ClusterName: localAgent.siteName,
+		Username:    localAgent.username,
+	}
+	key := s.makeSignedKey(t, idx, false)
+
+	// add the test key to the local agent and keystore
+	err = localAgent.AddKey(key)
+	require.NoError(t, err)
+
+	err = localAgent.SaveTrustedCerts(key.TrustedCA)
+	require.NoError(t, err)
+
+	// Handle incoming agent connections
+	agentListenAddr := filepath.Join(t.TempDir(), "test-auth-socket")
+	agentListener, err := net.Listen("unix", agentListenAddr)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, agentListener.Close())
+	})
+
+	handleAgentConn := func(conn net.Conn) error {
+		defer conn.Close()
+		return agent.ServeAgent(localAgent, conn)
+	}
+
+	go func() {
+		var err error
+		var conn net.Conn
+		for err == nil {
+			conn, err = agentListener.Accept()
+			if err != nil {
+				return
+			}
+			err := handleAgentConn(conn)
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	// Create a new agent remote key store
+	agentKeystore, err := NewAgentRemoteKeyStore(agentListenAddr)
+	require.NoError(t, err)
+
+	// check that the local key exists in the remote store
+	retrievedKey, err := agentKeystore.GetKey(idx, WithSSHCerts{})
+	require.NoError(t, err)
+	require.Equal(t, key.KeyIndex, retrievedKey.KeyIndex)
+	require.Equal(t, key.Cert, retrievedKey.Cert)
+	require.Equal(t, key.TLSCert, retrievedKey.TLSCert)
+	require.Equal(t, key.TrustedCA, retrievedKey.TrustedCA)
 }

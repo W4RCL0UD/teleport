@@ -371,10 +371,12 @@ func onProxyCommandDB(cf *CLIConf) error {
 	if err != nil {
 		return trace.Wrap(err)
 	}
-	profile, err := libclient.StatusCurrent(cf.HomePath, cf.Proxy, cf.IdentityFileIn)
+
+	profile, err := libclient.ReadProfileStatus(client.KeyStore, cf.Proxy)
 	if err != nil {
 		return trace.Wrap(err)
 	}
+
 	routeToDatabase, db, err := getDatabaseInfo(cf, client, cf.DatabaseService)
 	if err != nil {
 		return trace.Wrap(err)

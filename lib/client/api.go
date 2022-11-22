@@ -26,21 +26,17 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/url"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/gravitational/trace"
-	"github.com/jonboulle/clockwork"
 	"github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel/attribute"
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -58,9 +54,7 @@ import (
 	"github.com/gravitational/teleport/api/profile"
 	"github.com/gravitational/teleport/api/types"
 	apievents "github.com/gravitational/teleport/api/types/events"
-	"github.com/gravitational/teleport/api/types/wrappers"
 	apiutils "github.com/gravitational/teleport/api/utils"
-	"github.com/gravitational/teleport/api/utils/keypaths"
 	"github.com/gravitational/teleport/api/utils/keys"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/auth/native"
@@ -244,8 +238,7 @@ type Config struct {
 	// Agent is used when SkipLocalAuth is true
 	Agent agent.ExtendedAgent
 
-	// PreloadKey is a key with which to initialize a local in-memory keystore.
-	PreloadKey *Key
+	KeyStore KeyStore
 
 	// ForwardAgent is used by the client to request agent forwarding from the server.
 	ForwardAgent AgentForwardingMode
@@ -502,230 +495,6 @@ func VirtualPathEnvNames(kind VirtualPathKind, params VirtualPathParams) []strin
 	return vars
 }
 
-// ProfileStatus combines metadata from the logged in profile and associated
-// SSH certificate.
-type ProfileStatus struct {
-	// Name is the profile name.
-	Name string
-
-	// Dir is the directory where profile is located.
-	Dir string
-
-	// ProxyURL is the URL the web client is accessible at.
-	ProxyURL url.URL
-
-	// Username is the Teleport username.
-	Username string
-
-	// Roles is a list of Teleport Roles this user has been assigned.
-	Roles []string
-
-	// Logins are the Linux accounts, also known as principals in OpenSSH terminology.
-	Logins []string
-
-	// KubeEnabled is true when this profile is configured to connect to a
-	// kubernetes cluster.
-	KubeEnabled bool
-
-	// KubeUsers are the kubernetes users used by this profile.
-	KubeUsers []string
-
-	// KubeGroups are the kubernetes groups used by this profile.
-	KubeGroups []string
-
-	// Databases is a list of database services this profile is logged into.
-	Databases []tlsca.RouteToDatabase
-
-	// Apps is a list of apps this profile is logged into.
-	Apps []tlsca.RouteToApp
-
-	// ValidUntil is the time at which this SSH certificate will expire.
-	ValidUntil time.Time
-
-	// Extensions is a list of enabled SSH features for the certificate.
-	Extensions []string
-
-	// CriticalOptions is a map of SSH critical options for the certificate.
-	CriticalOptions map[string]string
-
-	// Cluster is a selected cluster
-	Cluster string
-
-	// Traits hold claim data used to populate a role at runtime.
-	Traits wrappers.Traits
-
-	// ActiveRequests tracks the privilege escalation requests applied
-	// during certificate construction.
-	ActiveRequests services.RequestIDs
-
-	// AWSRoleARNs is a list of allowed AWS role ARNs user can assume.
-	AWSRolesARNs []string
-
-	// AllowedResourceIDs is a list of resources the user can access. An empty
-	// list means there are no resource-specific restrictions.
-	AllowedResourceIDs []types.ResourceID
-
-	// IsVirtual is set when this profile does not actually exist on disk,
-	// probably because it was constructed from an identity file. When set,
-	// certain profile functions - particularly those that return paths to
-	// files on disk - must be accompanied by fallback logic when those paths
-	// do not exist.
-	IsVirtual bool
-}
-
-// IsExpired returns true if profile is not expired yet
-func (p *ProfileStatus) IsExpired(clock clockwork.Clock) bool {
-	return p.ValidUntil.Sub(clock.Now()) <= 0
-}
-
-// virtualPathWarnOnce is used to ensure warnings about missing virtual path
-// environment variables are consolidated into a single message and not spammed
-// to the console.
-var virtualPathWarnOnce sync.Once
-
-// virtualPathFromEnv attempts to retrieve the path as defined by the given
-// formatter from the environment.
-func (p *ProfileStatus) virtualPathFromEnv(kind VirtualPathKind, params VirtualPathParams) (string, bool) {
-	if !p.IsVirtual {
-		return "", false
-	}
-
-	for _, envName := range VirtualPathEnvNames(kind, params) {
-		if val, ok := os.LookupEnv(envName); ok {
-			return val, true
-		}
-	}
-
-	// If we can't resolve any env vars, this will return garbage which we
-	// should at least warn about. As ugly as this is, arguably making every
-	// profile path lookup fallible is even uglier.
-	log.Debugf("Could not resolve path to virtual profile entry of type %s "+
-		"with parameters %+v.", kind, params)
-
-	virtualPathWarnOnce.Do(func() {
-		log.Errorf("A virtual profile is in use due to an identity file " +
-			"(`-i ...`) but this functionality requires additional files on " +
-			"disk and may fail. Consider using a compatible wrapper " +
-			"application (e.g. Machine ID) for this command.")
-	})
-
-	return "", false
-}
-
-// CACertPathForCluster returns path to the cluster CA certificate for this profile.
-//
-// It's stored in  <profile-dir>/keys/<proxy>/cas/<cluster>.pem by default.
-func (p *ProfileStatus) CACertPathForCluster(cluster string) string {
-	// Return an env var override if both valid and present for this identity.
-	if path, ok := p.virtualPathFromEnv(VirtualPathCA, VirtualPathCAParams(types.HostCA)); ok {
-		return path
-	}
-
-	return filepath.Join(keypaths.ProxyKeyDir(p.Dir, p.Name), "cas", cluster+".pem")
-}
-
-// KeyPath returns path to the private key for this profile.
-//
-// It's kept in <profile-dir>/keys/<proxy>/<user>.
-func (p *ProfileStatus) KeyPath() string {
-	// Return an env var override if both valid and present for this identity.
-	if path, ok := p.virtualPathFromEnv(VirtualPathKey, nil); ok {
-		return path
-	}
-
-	return keypaths.UserKeyPath(p.Dir, p.Name, p.Username)
-}
-
-// DatabaseCertPathForCluster returns path to the specified database access
-// certificate for this profile, for the specified cluster.
-//
-// It's kept in <profile-dir>/keys/<proxy>/<user>-db/<cluster>/<name>-x509.pem
-//
-// If the input cluster name is an empty string, the selected cluster in the
-// profile will be used.
-func (p *ProfileStatus) DatabaseCertPathForCluster(clusterName string, databaseName string) string {
-	if clusterName == "" {
-		clusterName = p.Cluster
-	}
-
-	if path, ok := p.virtualPathFromEnv(VirtualPathDatabase, VirtualPathDatabaseParams(databaseName)); ok {
-		return path
-	}
-
-	return keypaths.DatabaseCertPath(p.Dir, p.Name, p.Username, clusterName, databaseName)
-}
-
-// AppCertPath returns path to the specified app access certificate
-// for this profile.
-//
-// It's kept in <profile-dir>/keys/<proxy>/<user>-app/<cluster>/<name>-x509.pem
-func (p *ProfileStatus) AppCertPath(name string) string {
-	if path, ok := p.virtualPathFromEnv(VirtualPathApp, VirtualPathAppParams(name)); ok {
-		return path
-	}
-
-	return keypaths.AppCertPath(p.Dir, p.Name, p.Username, p.Cluster, name)
-}
-
-// AppLocalCAPath returns the specified app's self-signed localhost CA path for
-// this profile.
-//
-// It's kept in <profile-dir>/keys/<proxy>/<user>-app/<cluster>/<name>-localca.pem
-func (p *ProfileStatus) AppLocalCAPath(name string) string {
-	return keypaths.AppLocalCAPath(p.Dir, p.Name, p.Username, p.Cluster, name)
-}
-
-// KubeConfigPath returns path to the specified kubeconfig for this profile.
-//
-// It's kept in <profile-dir>/keys/<proxy>/<user>-kube/<cluster>/<name>-kubeconfig
-func (p *ProfileStatus) KubeConfigPath(name string) string {
-	if path, ok := p.virtualPathFromEnv(VirtualPathKubernetes, VirtualPathKubernetesParams(name)); ok {
-		return path
-	}
-
-	return keypaths.KubeConfigPath(p.Dir, p.Name, p.Username, p.Cluster, name)
-}
-
-// DatabaseServices returns a list of database service names for this profile.
-func (p *ProfileStatus) DatabaseServices() (result []string) {
-	for _, db := range p.Databases {
-		result = append(result, db.ServiceName)
-	}
-	return result
-}
-
-// DatabasesForCluster returns a list of databases for this profile, for the
-// specified cluster name.
-func (p *ProfileStatus) DatabasesForCluster(clusterName string) ([]tlsca.RouteToDatabase, error) {
-	if clusterName == "" || clusterName == p.Cluster {
-		return p.Databases, nil
-	}
-
-	idx := KeyIndex{
-		ProxyHost:   p.Name,
-		Username:    p.Username,
-		ClusterName: clusterName,
-	}
-
-	store, err := NewFSLocalKeyStore(p.Dir)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-	key, err := store.GetKey(idx, WithDBCerts{})
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-	return findActiveDatabases(key)
-}
-
-// AppNames returns a list of app names this profile is logged into.
-func (p *ProfileStatus) AppNames() (result []string) {
-	for _, app := range p.Apps {
-		result = append(result, app.Name)
-	}
-	return result
-}
-
 // RetryWithRelogin is a helper error handling method, attempts to relogin and
 // retry the function once.
 func RetryWithRelogin(ctx context.Context, tc *TeleportClient, fn func() error) error {
@@ -783,373 +552,46 @@ func IsErrorResolvableWithRelogin(err error) bool {
 		trace.IsBadParameter(err) || trace.IsTrustError(err) || keys.IsPrivateKeyPolicyError(err)
 }
 
-// ProfileOptions contains fields needed to initialize a profile beyond those
-// derived directly from a Key.
-type ProfileOptions struct {
-	ProfileName   string
-	ProfileDir    string
-	WebProxyAddr  string
-	Username      string
-	SiteName      string
-	KubeProxyAddr string
-	IsVirtual     bool
-}
-
-// profileFromkey returns a ProfileStatus for the given key and options.
-func profileFromKey(key *Key, opts ProfileOptions) (*ProfileStatus, error) {
-	sshCert, err := key.SSHCert()
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	// Extract from the certificate how much longer it will be valid for.
-	validUntil := time.Unix(int64(sshCert.ValidBefore), 0)
-
-	// Extract roles from certificate. Note, if the certificate is in old format,
-	// this will be empty.
-	var roles []string
-	rawRoles, ok := sshCert.Extensions[teleport.CertExtensionTeleportRoles]
-	if ok {
-		roles, err = services.UnmarshalCertRoles(rawRoles)
-		if err != nil {
-			return nil, trace.Wrap(err)
-		}
-	}
-	sort.Strings(roles)
-
-	// Extract traits from the certificate. Note if the certificate is in the
-	// old format, this will be empty.
-	var traits wrappers.Traits
-	rawTraits, ok := sshCert.Extensions[teleport.CertExtensionTeleportTraits]
-	if ok {
-		err = wrappers.UnmarshalTraits([]byte(rawTraits), &traits)
-		if err != nil {
-			return nil, trace.Wrap(err)
-		}
-	}
-
-	var activeRequests services.RequestIDs
-	rawRequests, ok := sshCert.Extensions[teleport.CertExtensionTeleportActiveRequests]
-	if ok {
-		if err := activeRequests.Unmarshal([]byte(rawRequests)); err != nil {
-			return nil, trace.Wrap(err)
-		}
-	}
-
-	allowedResourcesStr := sshCert.Extensions[teleport.CertExtensionAllowedResources]
-	allowedResourceIDs, err := types.ResourceIDsFromString(allowedResourcesStr)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	// Extract extensions from certificate. This lists the abilities of the
-	// certificate (like can the user request a PTY, port forwarding, etc.)
-	var extensions []string
-	for ext := range sshCert.Extensions {
-		if ext == teleport.CertExtensionTeleportRoles ||
-			ext == teleport.CertExtensionTeleportTraits ||
-			ext == teleport.CertExtensionTeleportRouteToCluster ||
-			ext == teleport.CertExtensionTeleportActiveRequests ||
-			ext == teleport.CertExtensionAllowedResources {
-			continue
-		}
-		extensions = append(extensions, ext)
-	}
-	sort.Strings(extensions)
-
-	tlsCert, err := key.TeleportTLSCertificate()
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-	tlsID, err := tlsca.FromSubject(tlsCert.Subject, time.Time{})
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	databases, err := findActiveDatabases(key)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	appCerts, err := key.AppTLSCertificates()
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-	var apps []tlsca.RouteToApp
-	for _, cert := range appCerts {
-		tlsID, err := tlsca.FromSubject(cert.Subject, time.Time{})
-		if err != nil {
-			return nil, trace.Wrap(err)
-		}
-		if tlsID.RouteToApp.PublicAddr != "" {
-			apps = append(apps, tlsID.RouteToApp)
-		}
-	}
-
-	return &ProfileStatus{
-		Name: opts.ProfileName,
-		Dir:  opts.ProfileDir,
-		ProxyURL: url.URL{
-			Scheme: "https",
-			Host:   opts.WebProxyAddr,
-		},
-		Username:           opts.Username,
-		Logins:             sshCert.ValidPrincipals,
-		ValidUntil:         validUntil,
-		Extensions:         extensions,
-		CriticalOptions:    sshCert.CriticalOptions,
-		Roles:              roles,
-		Cluster:            opts.SiteName,
-		Traits:             traits,
-		ActiveRequests:     activeRequests,
-		KubeEnabled:        opts.KubeProxyAddr != "",
-		KubeUsers:          tlsID.KubernetesUsers,
-		KubeGroups:         tlsID.KubernetesGroups,
-		Databases:          databases,
-		Apps:               apps,
-		AWSRolesARNs:       tlsID.AWSRoleARNs,
-		IsVirtual:          opts.IsVirtual,
-		AllowedResourceIDs: allowedResourceIDs,
-	}, nil
-}
-
-// ReadProfileFromIdentity creates a "fake" profile from only an identity file,
-// allowing the various profile-using subcommands to use identity files as if
-// they were profiles. It will set the `username` and `siteName` fields of
-// the profileOptions to certificate-provided values if they are unset.
-func ReadProfileFromIdentity(key *Key, opts ProfileOptions) (*ProfileStatus, error) {
-	// Note: these profile options are largely derived from tsh's makeClient()
-	if opts.Username == "" {
-		username, err := key.CertUsername()
-		if err != nil {
-			return nil, trace.Wrap(err)
-		}
-
-		opts.Username = username
-	}
-
-	if opts.SiteName == "" {
-		rootCluster, err := key.RootClusterName()
-		if err != nil {
-			return nil, trace.Wrap(err)
-		}
-
-		opts.SiteName = rootCluster
-	}
-
-	opts.IsVirtual = true
-
-	return profileFromKey(key, opts)
-}
-
-// ReadProfileStatus reads in the profile as well as the associated certificate
-// and returns a *ProfileStatus which can be used to print the status of the
-// profile.
-func ReadProfileStatus(profileDir string, profileName string) (*ProfileStatus, error) {
-	if profileDir == "" {
-		return nil, trace.BadParameter("profileDir cannot be empty")
-	}
-
-	// Read in the profile for this proxy.
-	profile, err := profile.FromDir(profileDir, profileName)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	// Read in the SSH certificate for the user logged into this proxy.
-	store, err := NewFSLocalKeyStore(profileDir)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-	idx := KeyIndex{
-		ProxyHost:   profile.Name(),
-		Username:    profile.Username,
-		ClusterName: profile.SiteName,
-	}
-	key, err := store.GetKey(idx, WithAllCerts...)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	return profileFromKey(key, ProfileOptions{
-		ProfileName:   profileName,
-		ProfileDir:    profileDir,
-		WebProxyAddr:  profile.WebProxyAddr,
-		Username:      profile.Username,
-		SiteName:      profile.SiteName,
-		KubeProxyAddr: profile.KubeProxyAddr,
-		IsVirtual:     false,
-	})
-}
-
-// StatusCurrent returns the active profile status.
-func StatusCurrent(profileDir, proxyHost, identityFilePath string) (*ProfileStatus, error) {
-	if identityFilePath != "" {
-		key, err := KeyFromIdentityFile(identityFilePath)
-		if err != nil {
-			return nil, trace.Wrap(err)
-		}
-
-		profile, err := ReadProfileFromIdentity(key, ProfileOptions{
-			ProfileName:  "identity",
-			WebProxyAddr: proxyHost,
-		})
-		if err != nil {
-			return nil, trace.Wrap(err)
-		}
-
-		return profile, nil
-	}
-
-	active, _, err := Status(profileDir, proxyHost)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-	if active == nil {
-		return nil, trace.NotFound("not logged in")
-	}
-	return active, nil
-}
-
-// StatusFor returns profile for the specified proxy/user.
-func StatusFor(profileDir, proxyHost, username string) (*ProfileStatus, error) {
-	active, others, err := Status(profileDir, proxyHost)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-	for _, profile := range append(others, active) {
-		if profile != nil && profile.Username == username {
-			return profile, nil
-		}
-	}
-	return nil, trace.NotFound("no profile for proxy %v and user %v found",
-		proxyHost, username)
-}
-
-// Status returns the active profile as well as a list of available profiles.
-// If no profile is active, Status returns a nil error and nil profile.
-func Status(profileDir, proxyHost string) (*ProfileStatus, []*ProfileStatus, error) {
-	var err error
-	var profileStatus *ProfileStatus
-	var others []*ProfileStatus
-
-	// remove ports from proxy host, because profile name is stored
-	// by host name
-	if proxyHost != "" {
-		proxyHost, err = utils.Host(proxyHost)
-		if err != nil {
-			return nil, nil, trace.Wrap(err)
-		}
-	}
-
-	// Construct the full path to the profile requested and make sure it exists.
-	profileDir = profile.FullProfilePath(profileDir)
-	stat, err := os.Stat(profileDir)
-	if err != nil {
-		log.Debugf("Failed to stat file: %v.", err)
-		if os.IsNotExist(err) {
-			return nil, nil, trace.NotFound(err.Error())
-		} else if os.IsPermission(err) {
-			return nil, nil, trace.AccessDenied(err.Error())
-		} else {
-			return nil, nil, trace.Wrap(err)
-		}
-	}
-	if !stat.IsDir() {
-		return nil, nil, trace.BadParameter("profile path not a directory")
-	}
-
-	// use proxyHost as default profile name, or the current profile if
-	// no proxyHost was supplied.
-	profileName := proxyHost
-	if profileName == "" {
-		profileName, err = profile.GetCurrentProfileName(profileDir)
-		if err != nil {
-			if trace.IsNotFound(err) {
-				return nil, nil, trace.NotFound("not logged in")
-			}
-			return nil, nil, trace.Wrap(err)
-		}
-	}
-
-	// Read in the target profile first. If readProfile returns trace.NotFound
-	// or trace.CompareFailed, that means the profile may have been corrupted
-	// (for example keys were deleted or modified, but profile exists), treat
-	// this as the user not being logged in.
-	profileStatus, err = ReadProfileStatus(profileDir, profileName)
-	if err != nil {
-		log.Debug(err)
-		if !trace.IsNotFound(err) && !trace.IsCompareFailed(err) {
-			return nil, nil, trace.Wrap(err)
-		}
-		// Make sure the profile is nil, which tsh uses to detect that no
-		// active profile exists.
-		profileStatus = nil
-	}
-
-	// load the rest of the profiles
-	profiles, err := profile.ListProfileNames(profileDir)
-	if err != nil {
-		return nil, nil, trace.Wrap(err)
-	}
-	for _, name := range profiles {
-		if name == profileName {
-			// already loaded this one
-			continue
-		}
-		ps, err := ReadProfileStatus(profileDir, name)
-		if err != nil {
-			log.Debug(err)
-			// parts of profile are missing?
-			// status skips these files
-			if trace.IsNotFound(err) {
-				continue
-			}
-			return nil, nil, trace.Wrap(err)
-		}
-		others = append(others, ps)
-	}
-
-	return profileStatus, others, nil
-}
-
 // LoadProfile populates Config with the values stored in the given
 // profiles directory. If profileDir is an empty string, the default profile
 // directory ~/.tsh is used.
-func (c *Config) LoadProfile(profileDir string, proxyName string) error {
-	// read the profile:
-	cp, err := profile.FromDir(profileDir, ProxyHost(proxyName))
-	if trace.IsNotFound(err) {
-		if trace.IsNotFound(err) {
-			return nil
+func (c *Config) LoadProfile(ps ProfileStore, proxyName string) error {
+	if proxyName == "" {
+		currentProfile, err := ps.CurrentProfile()
+		if err != nil {
+			return trace.Wrap(err)
 		}
-	} else if err != nil {
+		proxyName = currentProfile
+	}
+
+	profile, err := ps.GetProfile(proxyName)
+	if err != nil {
 		return trace.Wrap(err)
 	}
 
-	c.Username = cp.Username
-	c.SiteName = cp.SiteName
-	c.KubeProxyAddr = cp.KubeProxyAddr
-	c.WebProxyAddr = cp.WebProxyAddr
-	c.SSHProxyAddr = cp.SSHProxyAddr
-	c.PostgresProxyAddr = cp.PostgresProxyAddr
-	c.MySQLProxyAddr = cp.MySQLProxyAddr
-	c.MongoProxyAddr = cp.MongoProxyAddr
-	c.TLSRoutingEnabled = cp.TLSRoutingEnabled
-	c.KeysDir = profileDir
-	c.AuthConnector = cp.AuthConnector
-	c.LoadAllCAs = cp.LoadAllCAs
-	c.AuthenticatorAttachment, err = parseMFAMode(cp.MFAMode)
+	c.Username = profile.Username
+	c.SiteName = profile.SiteName
+	c.KubeProxyAddr = profile.KubeProxyAddr
+	c.WebProxyAddr = profile.WebProxyAddr
+	c.SSHProxyAddr = profile.SSHProxyAddr
+	c.PostgresProxyAddr = profile.PostgresProxyAddr
+	c.MySQLProxyAddr = profile.MySQLProxyAddr
+	c.MongoProxyAddr = profile.MongoProxyAddr
+	c.TLSRoutingEnabled = profile.TLSRoutingEnabled
+	c.KeysDir = profile.Dir
+	c.AuthConnector = profile.AuthConnector
+	c.LoadAllCAs = profile.LoadAllCAs
+	c.AuthenticatorAttachment, err = parseMFAMode(profile.MFAMode)
 	if err != nil {
 		return trace.BadParameter("unable to parse mfa mode in user profile: %v.", err)
 	}
 
-	c.LocalForwardPorts, err = ParsePortForwardSpec(cp.ForwardedPorts)
+	c.LocalForwardPorts, err = ParsePortForwardSpec(profile.ForwardedPorts)
 	if err != nil {
 		log.Warnf("Unable to parse port forwarding in user profile: %v.", err)
 	}
 
-	c.DynamicForwardedPorts, err = ParseDynamicPortForwardSpec(cp.DynamicForwardedPorts)
+	c.DynamicForwardedPorts, err = ParseDynamicPortForwardSpec(profile.DynamicForwardedPorts)
 	if err != nil {
 		log.Warnf("Unable to parse dynamic port forwarding in user profile: %v.", err)
 	}
@@ -1502,6 +944,7 @@ func NewClient(c *Config) (tc *TeleportClient, err error) {
 	tc.eventsCh = make(chan events.EventFields, 1024)
 
 	localAgentCfg := LocalAgentConfig{
+		Keystore:   c.KeyStore,
 		Agent:      c.Agent,
 		ProxyHost:  tc.WebProxyHost(),
 		Username:   c.Username,
@@ -1511,28 +954,24 @@ func NewClient(c *Config) (tc *TeleportClient, err error) {
 		LoadAllCAs: tc.LoadAllCAs,
 	}
 
-	// sometimes we need to use external auth without using local auth
-	// methods, e.g. in automation daemons.
-	if c.SkipLocalAuth {
-		if len(c.AuthMethods) == 0 {
-			return nil, trace.BadParameter("SkipLocalAuth is true but no AuthMethods provided")
-		}
-		localAgentCfg.Keystore = noLocalKeyStore{}
-		if c.PreloadKey != nil {
+	if c.KeyStore == nil {
+		// sometimes we need to use external auth without using local auth
+		// methods, e.g. in automation daemons.
+		if c.SkipLocalAuth {
+			if len(c.AuthMethods) == 0 {
+				return nil, trace.BadParameter("SkipLocalAuth is true but no AuthMethods provided")
+			}
+			localAgentCfg.Keystore = noLocalKeyStore{}
+		} else if c.AddKeysToAgent == AddKeysToAgentOnly {
 			localAgentCfg.Keystore, err = NewMemLocalKeyStore(c.KeysDir)
 			if err != nil {
 				return nil, trace.Wrap(err)
 			}
-		}
-	} else if c.AddKeysToAgent == AddKeysToAgentOnly {
-		localAgentCfg.Keystore, err = NewMemLocalKeyStore(c.KeysDir)
-		if err != nil {
-			return nil, trace.Wrap(err)
-		}
-	} else {
-		localAgentCfg.Keystore, err = NewFSLocalKeyStore(c.KeysDir)
-		if err != nil {
-			return nil, trace.Wrap(err)
+		} else {
+			localAgentCfg.Keystore, err = NewFSLocalKeyStore(c.KeysDir)
+			if err != nil {
+				return nil, trace.Wrap(err)
+			}
 		}
 	}
 
@@ -1544,20 +983,6 @@ func NewClient(c *Config) (tc *TeleportClient, err error) {
 
 	if tc.HostKeyCallback == nil {
 		tc.HostKeyCallback = tc.localAgent.CheckHostSignature
-	}
-
-	if c.PreloadKey != nil {
-		// Extract the username from the key - it's needed for GetKey()
-		// to function properly.
-		tc.localAgent.username, err = c.PreloadKey.CertUsername()
-		if err != nil {
-			return nil, trace.Wrap(err)
-		}
-
-		// Add the key to the agent and keystore.
-		if err := tc.AddKey(c.PreloadKey); err != nil {
-			return nil, trace.Wrap(err)
-		}
 	}
 
 	return tc, nil
@@ -4765,4 +4190,17 @@ func parseMFAMode(in string) (webauthncli.AuthenticatorAttachment, error) {
 	default:
 		return 0, trace.BadParameter("unsupported mfa mode %q", in)
 	}
+}
+
+func (tc *TeleportClient) ProfileStatus() (*ProfileStatus, error) {
+	status, err := ReadProfileStatus(tc.KeyStore, tc.WebProxyAddr)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	// If the profile has a different username than the current client, don't return
+	// the profile. This is used for login and logout logic.
+	if status.Username != tc.Username {
+		return nil, trace.NotFound("no profile for proxy %v and user %v found", tc.WebProxyAddr, tc.Username)
+	}
+	return status, nil
 }

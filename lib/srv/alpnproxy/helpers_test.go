@@ -207,6 +207,8 @@ func mustGenCertSignedWithCA(t *testing.T, ca *tlsca.CertAuthority, opts ...sign
 	keyRaw := x509.MarshalPKCS1PrivateKey(privateKey)
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyRaw})
 	cert, err := tls.X509KeyPair(tlsCert, keyPEM)
+	x := cert.Certificate[0]
+	require.NotNil(t, x)
 	require.NoError(t, err)
 	return cert
 }

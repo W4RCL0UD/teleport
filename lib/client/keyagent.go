@@ -19,6 +19,7 @@ package client
 import (
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -33,6 +34,7 @@ import (
 
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/api/constants"
+	"github.com/gravitational/teleport/api/profile"
 	"github.com/gravitational/teleport/api/utils/sshutils"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/tlsca"
@@ -150,7 +152,7 @@ type LocalAgentConfig struct {
 // and loads them into the local and system agent
 func NewLocalAgent(conf LocalAgentConfig) (a *LocalKeyAgent, err error) {
 	if conf.Agent == nil {
-		keyring, ok := agent.NewKeyring().(agent.ExtendedAgent)
+		keyring, ok := NewKeyring().(agent.ExtendedAgent)
 		if !ok {
 			return nil, trace.Errorf("unexpected keyring type: %T, expected agent.ExtendedKeyring", keyring)
 		}
@@ -728,20 +730,47 @@ func (a *LocalKeyAgent) GetClusterNames() ([]string, error) {
 // response will be returned as a []byte slice, including the "type" byte of the message.
 func (a *LocalKeyAgent) Extension(extensionType string, contents []byte) ([]byte, error) {
 	switch extensionType {
-	case agentExtensionListKeys:
-		var resp listKeysResponse
-		var err error
-
-		resp.KnownHosts, err = a.keyStore.GetKnownHostsFile()
+	case agentExtensionListProfiles:
+		current, err := a.keyStore.CurrentProfile()
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
+
+		profileNames, err := a.keyStore.ListProfiles()
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		var profiles []*profile.Profile
+		for _, profileName := range profileNames {
+			profile, err := a.keyStore.GetProfile(profileName)
+			if err != nil {
+				return nil, trace.Wrap(err)
+			}
+			profiles = append(profiles, profile)
+		}
+
+		profilesBlob, err := json.Marshal(profiles)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		return ssh.Marshal(listProfilesResponse{
+			CurrentProfileName: current,
+			ProfilesBlob:       profilesBlob,
+		}), nil
+	case agentExtensionListKeys:
+		// var req listKeysRequest
+		// if err := ssh.Unmarshal(contents, &req); err != nil {
+		// 	return nil, trace.Wrap(err)
+		// }
 
 		agentKeys, err := GetTeleportAgentKeys(a.ExtendedAgent, KeyIndex{})
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
 
+		var keys []forwardedKey
 		for _, agentKey := range agentKeys {
 			idx, _ := parseTeleportAgentKeyComment(agentKey.Comment)
 			key, err := a.GetKey(idx.ClusterName, WithSSHCerts{})
@@ -754,10 +783,8 @@ func (a *LocalKeyAgent) Extension(extensionType string, contents []byte) ([]byte
 				return nil, trace.Wrap(err)
 			}
 
-			resp.Keys = append(resp.Keys, teleportAgentKey{
-				ProxyHost:      key.ProxyHost,
-				ClusterName:    key.ClusterName,
-				Username:       key.Username,
+			keys = append(keys, forwardedKey{
+				KeyIndex:       key.KeyIndex,
 				SSHCertificate: key.Cert,
 				TLSCertificate: key.TLSCert,
 				TrustedCerts:   key.TrustedCA,
@@ -769,44 +796,77 @@ func (a *LocalKeyAgent) Extension(extensionType string, contents []byte) ([]byte
 			return nil, trace.Wrap(err)
 		}
 
+		keysBlob, err := json.Marshal(keys)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
 		return ssh.Marshal(listKeysResponse{
-			Keys:       []teleportAgentKey{},
 			KnownHosts: knownHosts,
+			KeysBlob:   keysBlob,
 		}), nil
 	default:
-		return nil, agent.ErrExtensionUnsupported
+		return a.ExtendedAgent.Extension(extensionType, contents)
 	}
 }
 
 const (
-	// The list-keys@goteleport.com extension returns a list of Teleport
-	// client keys for each Teleport agent key loaded into the current agent.
+	// agentExtensionListProfiles extension returns a list of active
+	// Teleport client profiles available to the Teleport key agent.
+	agentExtensionListProfiles = "list-profiles@goteleport.com"
+	// agentExtensionListKeys extension returns a list of Teleport client
+	// keys for each Teleport agent key loaded into the current agent.
 	agentExtensionListKeys = "list-keys@goteleport.com"
 )
 
-type listKeysResponse struct {
-	Keys       []teleportAgentKey
-	KnownHosts []byte
+type listProfilesResponse struct {
+	CurrentProfileName string
+	ProfilesBlob       []byte
 }
 
-type teleportAgentKey struct {
-	ProxyHost      string
-	ClusterName    string
-	Username       string
+func ListProfilesExtension(agent agent.ExtendedAgent) (currentProfile string, profiles []*profile.Profile, err error) {
+	respBlob, err := agent.Extension(agentExtensionListProfiles, nil)
+	if err != nil {
+		return "", nil, trace.Wrap(err)
+	}
+	var resp listProfilesResponse
+	if err := ssh.Unmarshal(respBlob, &resp); err != nil {
+		return "", nil, trace.Wrap(err)
+	}
+	if err := json.Unmarshal(resp.ProfilesBlob, &profiles); err != nil {
+		return "", nil, trace.Wrap(err)
+	}
+	return resp.CurrentProfileName, profiles, nil
+}
+
+type listKeysRequest struct {
+	KeyIndex KeyIndex
+}
+
+type listKeysResponse struct {
+	KnownHosts []byte
+	KeysBlob   []byte
+}
+
+type forwardedKey struct {
+	KeyIndex
 	SSHCertificate []byte
 	TLSCertificate []byte
-	TrustedCerts   []auth.TrustedCerts
+	// TODO: Just get TLS certs?
+	TrustedCerts []auth.TrustedCerts
 }
 
-func ListKeysExtension(agent agent.ExtendedAgent) (resp listKeysResponse, err error) {
+func ListKeysExtension(agent agent.ExtendedAgent) (knownHosts []byte, keys []forwardedKey, err error) {
 	respBlob, err := agent.Extension(agentExtensionListKeys, nil)
 	if err != nil {
-		return resp, trace.Wrap(err)
+		return nil, nil, trace.Wrap(err)
 	}
-
+	var resp listKeysResponse
 	if err := ssh.Unmarshal(respBlob, &resp); err != nil {
-		return resp, trace.Wrap(err)
+		return nil, nil, trace.Wrap(err)
 	}
-
-	return resp, nil
+	if err := json.Unmarshal(resp.KeysBlob, &keys); err != nil {
+		return nil, nil, trace.Wrap(err)
+	}
+	return resp.KnownHosts, keys, nil
 }

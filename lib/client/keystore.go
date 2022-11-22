@@ -44,6 +44,7 @@ import (
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/sshutils"
 	"github.com/gravitational/teleport/lib/utils"
+	"github.com/gravitational/teleport/lib/utils/agentconn"
 )
 
 const (
@@ -66,6 +67,8 @@ const (
 // The _only_ filesystem-based implementation of KeyStore is declared
 // below (FSLocalKeyStore)
 type KeyStore interface {
+	ProfileStore
+
 	// AddKey adds the given key to the store.
 	AddKey(key *Key) error
 
@@ -135,6 +138,31 @@ func initKeysDir(dirPath string) (string, error) {
 		return "", trace.ConvertSystemError(err)
 	}
 	return dirPath, nil
+}
+
+func (fs *FSLocalKeyStore) CurrentProfile() (string, error) {
+	profileName, err := profile.GetCurrentProfileName(fs.KeyDir)
+	if err != nil {
+		return "", trace.Wrap(err)
+	}
+	return profileName, nil
+}
+
+func (fs *FSLocalKeyStore) ListProfiles() ([]string, error) {
+	profileNames, err := profile.ListProfileNames(fs.KeyDir)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return profileNames, nil
+}
+
+func (fs *FSLocalKeyStore) GetProfile(profileName string) (*profile.Profile, error) {
+	// Read in the profile for this proxy.
+	profile, err := profile.FromDir(fs.KeyDir, profileName)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return profile, nil
 }
 
 // sshDir returns the SSH certificate path for the given KeyIndex.
@@ -874,6 +902,15 @@ func (noLocalKeyStore) GetTrustedCertsPEM(proxyHost string) ([][]byte, error) {
 func (noLocalKeyStore) GetSSHCertificates(proxyHost, username string) ([]*ssh.Certificate, error) {
 	return nil, errNoLocalKeyStore
 }
+func (noLocalKeyStore) CurrentProfile() (string, error) {
+	return "", errNoLocalKeyStore
+}
+func (noLocalKeyStore) ListProfiles() ([]string, error) {
+	return nil, errNoLocalKeyStore
+}
+func (noLocalKeyStore) GetProfile(profileName string) (*profile.Profile, error) {
+	return nil, errNoLocalKeyStore
+}
 
 // MemLocalKeyStore is an in-memory session keystore implementation.
 type MemLocalKeyStore struct {
@@ -1010,28 +1047,84 @@ func (s *MemLocalKeyStore) GetSSHCertificates(proxyHost, username string) ([]*ss
 	return sshCerts, nil
 }
 
+func (s *MemLocalKeyStore) CurrentProfile() (string, error) {
+	return "", errNoLocalKeyStore
+}
+func (s *MemLocalKeyStore) ListProfiles() ([]string, error) {
+	return nil, errNoLocalKeyStore
+}
+func (s *MemLocalKeyStore) GetProfile(profileName string) (*profile.Profile, error) {
+	return nil, errNoLocalKeyStore
+}
+
 type AgentRemoteKeyStore struct {
 	noLocalKeyStore
 	agent agent.ExtendedAgent
 }
 
 // NewAgentRemoteKeyStore
-func NewAgentRemoteKeyStore(agent agent.ExtendedAgent) (s *AgentRemoteKeyStore, err error) {
-	// TODO: query supported extenstions to ensure we were handed a valid Teleport extended agent.
-	return &AgentRemoteKeyStore{
-		noLocalKeyStore: noLocalKeyStore{},
-		agent:           agent,
-	}, nil
-}
-
-func (s *AgentRemoteKeyStore) GetKey(idx KeyIndex, opts ...CertOption) (*Key, error) {
-	// TODO: cache response for future/other calls
-	resp, err := ListKeysExtension(s.agent)
+func NewAgentRemoteKeyStore(sshAuthSocket string) (s *AgentRemoteKeyStore, err error) {
+	conn, err := agentconn.Dial(sshAuthSocket)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
-	for _, teleportKey := range resp.Keys {
+	clt := agent.NewClient(conn)
+
+	// List profiles to check that the agent is a Teleport key agent.
+	if _, _, err := ListProfilesExtension(clt); err == agent.ErrExtensionUnsupported {
+		return nil, trace.Wrap(err)
+	}
+
+	return &AgentRemoteKeyStore{
+		noLocalKeyStore: noLocalKeyStore{},
+		agent:           clt,
+	}, nil
+}
+
+func (s *AgentRemoteKeyStore) CurrentProfile() (string, error) {
+	currentProfile, _, err := ListProfilesExtension(s.agent)
+	if err != nil {
+		return "", trace.Wrap(err)
+	}
+	return currentProfile, nil
+}
+
+func (s *AgentRemoteKeyStore) ListProfiles() ([]string, error) {
+	_, profiles, err := ListProfilesExtension(s.agent)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	var profileNames []string
+	for _, profile := range profiles {
+		profileNames = append(profileNames, profile.Name())
+	}
+	return profileNames, nil
+}
+
+func (s *AgentRemoteKeyStore) GetProfile(profileName string) (*profile.Profile, error) {
+	_, profiles, err := ListProfilesExtension(s.agent)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	for _, profile := range profiles {
+		if profile.Name() == profileName {
+			return profile, nil
+		}
+	}
+	return nil, trace.NotFound("profile not found")
+}
+
+func (s *AgentRemoteKeyStore) GetKey(idx KeyIndex, opts ...CertOption) (*Key, error) {
+	// TODO: cache response for future/other calls
+	_, forwardedKeys, err := ListKeysExtension(s.agent)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	for _, teleportKey := range forwardedKeys {
 		teleportKeyIdx := KeyIndex{
 			ProxyHost:   teleportKey.ProxyHost,
 			ClusterName: teleportKey.ClusterName,
@@ -1039,7 +1132,7 @@ func (s *AgentRemoteKeyStore) GetKey(idx KeyIndex, opts ...CertOption) (*Key, er
 		}
 
 		if teleportKeyIdx.Match(idx) {
-			sshCert, err := apisshutils.ParseCertificate(teleportKey.TLSCertificate)
+			sshCert, err := apisshutils.ParseCertificate(teleportKey.SSHCertificate)
 			if err != nil {
 				return nil, trace.Wrap(err)
 			}
@@ -1051,6 +1144,7 @@ func (s *AgentRemoteKeyStore) GetKey(idx KeyIndex, opts ...CertOption) (*Key, er
 			}
 
 			key := NewKey(priv)
+			key.KeyIndex = teleportKey.KeyIndex
 			key.Cert = teleportKey.SSHCertificate
 			key.TLSCert = teleportKey.TLSCertificate
 			key.TrustedCA = teleportKey.TrustedCerts
@@ -1064,12 +1158,12 @@ func (s *AgentRemoteKeyStore) GetKey(idx KeyIndex, opts ...CertOption) (*Key, er
 // GetKnownHostsFile returns a known hosts file.
 func (s *AgentRemoteKeyStore) GetKnownHostsFile() ([]byte, error) {
 	// TODO: cache response for future/other calls
-	resp, err := ListKeysExtension(s.agent)
+	knownHosts, _, err := ListKeysExtension(s.agent)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
-	return resp.KnownHosts, nil
+	return knownHosts, nil
 }
 
 // GetKnownHostKeys returns all known public host keys for the given host name.
@@ -1086,16 +1180,16 @@ func (s *AgentRemoteKeyStore) GetKnownHostKeys(hostname string) ([]ssh.PublicKey
 // Each returned byte slice contains an individual PEM block.
 func (s *AgentRemoteKeyStore) GetTrustedCertsPEM(proxyHost string) ([][]byte, error) {
 	// TODO: cache response for future/other calls
-	resp, err := ListKeysExtension(s.agent)
+	_, forwardKeys, err := ListKeysExtension(s.agent)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
-	if len(resp.Keys) == 0 || len(resp.Keys[0].TrustedCerts) == 0 {
+	if len(forwardKeys) == 0 || len(forwardKeys[0].TrustedCerts) == 0 {
 		return nil, trace.NotFound("trusted certs not found")
 	}
 
-	return resp.Keys[0].TrustedCerts[0].TLSCertificates, nil
+	return forwardKeys[0].TrustedCerts[0].TLSCertificates, nil
 }
 
 // GetSSHCertificates gets all certificates signed for the given user and proxy,
@@ -1176,14 +1270,101 @@ func (as *agentSigner) Public() crypto.PublicKey {
 	return nil
 }
 
-func (as *agentSigner) Sign(_ io.Reader, digest []byte, _ crypto.SignerOpts) ([]byte, error) {
-	signature, err := as.agent.Sign(as.sshCert, digest)
+func (as *agentSigner) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	return SignPKCS7Extension(as.agent, as.sshCert, digest, opts)
+}
+
+type IdentityFileKeyStore struct {
+	noLocalKeyStore
+	profile *profile.Profile
+	key     *Key
+}
+
+// NewIdentityFileKeyStore
+func NewIdentityFileKeyStore(identityFile string, proxyAddr string, clusterName string) (s *IdentityFileKeyStore, err error) {
+	key, err := KeyFromIdentityFile(identityFile)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
-	// TODO: ecdsa and dsa keys are not ASN.1-encoded, we'd need to
-	// reverse the re-encoding done by the ssh.Signer.Sign method.
+	proxyHost, err := utils.Host(proxyAddr)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
 
-	return signature.Blob, nil
+	if clusterName == "" {
+		clusterName, err = key.RootClusterName()
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+	}
+
+	certUsername, err := key.CertUsername()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	// Configure missing KeyIndex fields.
+	key.KeyIndex = KeyIndex{
+		ProxyHost:   proxyHost,
+		ClusterName: clusterName,
+		Username:    certUsername,
+	}
+
+	profile := &profile.Profile{
+		WebProxyAddr: proxyAddr,
+		SiteName:     clusterName,
+		Username:     certUsername,
+	}
+
+	return &IdentityFileKeyStore{
+		noLocalKeyStore: noLocalKeyStore{},
+		profile:         profile,
+		key:             key,
+	}, nil
+}
+
+func (s *IdentityFileKeyStore) CurrentProfile() (string, error) {
+	return s.profile.Name(), nil
+}
+
+func (s *IdentityFileKeyStore) ListProfiles() ([]string, error) {
+	return []string{s.profile.Name()}, nil
+}
+
+func (s *IdentityFileKeyStore) GetProfile(profileName string) (*profile.Profile, error) {
+	if profileName == s.profile.Name() {
+		return s.profile, nil
+	}
+	return nil, trace.NotFound("profile not found")
+}
+
+func (s *IdentityFileKeyStore) GetKey(idx KeyIndex, opts ...CertOption) (*Key, error) {
+	if s.key.Match(idx) {
+		return s.key, nil
+	}
+
+	return nil, trace.NotFound("key not found")
+}
+
+// GetKnownHostsFile returns a known hosts file.
+func (s *IdentityFileKeyStore) GetKnownHostsFile() ([]byte, error) {
+	return nil, errNoLocalKeyStore
+}
+
+// GetKnownHostKeys returns all known public host keys for the given host name.
+func (s *IdentityFileKeyStore) GetKnownHostKeys(hostname string) ([]ssh.PublicKey, error) {
+	return nil, errNoLocalKeyStore
+}
+
+// GetTrustedCertsPEM gets trusted TLS certificates of certificate authorities.
+// Each returned byte slice contains an individual PEM block.
+func (s *IdentityFileKeyStore) GetTrustedCertsPEM(proxyHost string) ([][]byte, error) {
+	return nil, errNoLocalKeyStore
+}
+
+// GetSSHCertificates gets all certificates signed for the given user and proxy,
+// including certificates for trusted clusters.
+func (s *IdentityFileKeyStore) GetSSHCertificates(proxyHost, username string) ([]*ssh.Certificate, error) {
+	return nil, errNoLocalKeyStore
 }

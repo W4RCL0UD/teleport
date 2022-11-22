@@ -178,7 +178,7 @@ func (c *Cluster) login(ctx context.Context, sshLoginFunc client.SSHLoginFunc) e
 		return trace.Wrap(err)
 	}
 
-	status, err := client.ReadProfileStatus(c.dir, key.ProxyHost)
+	status, err := client.ReadProfileStatus(c.clusterClient.KeyStore, key.ProxyHost)
 	if err != nil {
 		return trace.Wrap(err)
 	}
