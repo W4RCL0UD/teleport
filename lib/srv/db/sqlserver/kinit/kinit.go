@@ -79,7 +79,7 @@ func New(provider Provider) *PKInit {
 
 // NewCommandLineInitializerWithCommand returns a new command line initializer using a preinstalled `kinit` binary
 func NewCommandLineInitializerWithCommand(authClient windows.AuthInterface, user, realm, kdcHost, adminServer, dataDir string, ldapCA *x509.Certificate, command CommandGenerator, certGetter CertGetter) *CommandLineInitializer {
-	return &CommandLineInitializer{
+	cmd := &CommandLineInitializer{
 		auth:            authClient,
 		userName:        user,
 		cacheName:       fmt.Sprintf("%s@%s", user, realm),
@@ -95,6 +95,10 @@ func NewCommandLineInitializerWithCommand(authClient windows.AuthInterface, user
 		ldapCertificate: ldapCA,
 		log:             logrus.StandardLogger(),
 	}
+	if cmd.command == nil {
+		cmd.command = &execCmd{}
+	}
+	return cmd
 }
 
 // CommandGenerator is a small interface for wrapping *exec.Cmd

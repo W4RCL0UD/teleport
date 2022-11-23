@@ -2719,7 +2719,6 @@ func TestSerializeDatabases(t *testing.T) {
         "mode": 0
       },
       "ad": {
-        "keytab_file": "",
         "domain": "",
         "spn": ""
       }
