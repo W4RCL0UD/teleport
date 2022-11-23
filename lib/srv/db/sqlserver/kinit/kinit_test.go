@@ -82,7 +82,7 @@ type testCase struct {
 	expectCacheNil func(t require.TestingT, object interface{}, msgAndArgs ...interface{})
 }
 
-func step(t *testing.T, name string, cg commandGenerator, c *testCertGetter, expectErr func(t require.TestingT, err error, msgAndArgs ...interface{}), expectNil func(t require.TestingT, object interface{}, msgAndArgs ...interface{})) *testCase {
+func step(t *testing.T, name string, cg CommandGenerator, c *testCertGetter, expectErr func(t require.TestingT, err error, msgAndArgs ...interface{}), expectNil func(t require.TestingT, object interface{}, msgAndArgs ...interface{})) *testCase {
 	dir := t.TempDir()
 	var err error
 	dir, err = os.MkdirTemp(dir, "krb5_cache")

@@ -29,8 +29,9 @@ import (
 	"github.com/gravitational/trace"
 	"github.com/jcmturner/gokrb5/v8/client"
 
-	"github.com/gravitational/teleport/lib/auth"
+	"github.com/gravitational/teleport/lib/auth/windows"
 	"github.com/gravitational/teleport/lib/srv/db/common"
+	"github.com/gravitational/teleport/lib/srv/db/sqlserver/kinit"
 	"github.com/gravitational/teleport/lib/srv/db/sqlserver/protocol"
 )
 
@@ -44,9 +45,12 @@ type connector struct {
 	// Auth is the database auth client
 	DBAuth common.Auth
 	// AuthClient is the teleport client
-	AuthClient auth.ClientI
+	AuthClient windows.AuthInterface
 	// DataDir is the Teleport data directory
 	DataDir string
+
+	kinitCommandGenerator kinit.CommandGenerator
+	caFunc                func(ctx context.Context, clusterName string) ([]byte, error)
 }
 
 var errBadKerberosConfig = errors.New("configuration must have either keytab or kdc_host_name and ldap_cert")
@@ -55,12 +59,12 @@ func (c *connector) getKerberosClient(ctx context.Context, sessionCtx *common.Se
 	var kt *client.Client
 	var err error
 	if sessionCtx.Database.GetAD().KeytabFile != "" {
-		kt, err = keytabClient(sessionCtx)
+		kt, err = c.keytabClient(sessionCtx)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
 	} else if sessionCtx.Database.GetAD().KDCHostName != "" && sessionCtx.Database.GetAD().LDAPCert != "" {
-		kt, err = kinitClient(ctx, sessionCtx, c.AuthClient, c.DataDir)
+		kt, err = c.kinitClient(ctx, sessionCtx, c.AuthClient, c.DataDir)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}

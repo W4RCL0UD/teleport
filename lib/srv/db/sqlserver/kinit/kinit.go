@@ -31,14 +31,13 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/gravitational/teleport/api/types"
-	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/auth/windows"
 )
 
 const (
 	// krb5ConfigEnv sets the location from which kinit will attempt to read a configuration value
 	krb5ConfigEnv = "KRB5_CONFIG"
-	// kinitBinary is the binary name for the kinit executable
+	// kinitBinary is the binary Name for the kinit executable
 	kinitBinary = "kinit"
 	// krb5ConfigTemplate is a configuration template suitable for x509 configuration; it is read by the kinit binary
 	krb5ConfigTemplate = `[libdefaults]
@@ -78,18 +77,8 @@ func New(provider Provider) *PKInit {
 	return &PKInit{provider: provider}
 }
 
-// NewWithCommandLineProvider returns a new PKInit instance using a command line `kinit` binary
-func NewWithCommandLineProvider(authClient auth.ClientI, user, realm, kdcHost, adminServer, dataDir string, ldapCA *x509.Certificate, certGetter CertGetter) *PKInit {
-	return &PKInit{provider: NewCommandLineInitializer(authClient, user, realm, kdcHost, adminServer, dataDir, ldapCA, certGetter)}
-}
-
-// NewCommandLineInitializer returns a new command line initializer using a preinstalled `kinit` binary
-func NewCommandLineInitializer(authClient auth.ClientI, user, realm, kdcHost, adminServer, dataDir string, ldapCA *x509.Certificate, certGetter CertGetter) *CommandLineInitializer {
-	return NewCommandLineInitializerWithCommand(authClient, user, realm, kdcHost, adminServer, dataDir, ldapCA, &execCmd{}, certGetter)
-}
-
 // NewCommandLineInitializerWithCommand returns a new command line initializer using a preinstalled `kinit` binary
-func NewCommandLineInitializerWithCommand(authClient auth.ClientI, user, realm, kdcHost, adminServer, dataDir string, ldapCA *x509.Certificate, command commandGenerator, certGetter CertGetter) *CommandLineInitializer {
+func NewCommandLineInitializerWithCommand(authClient windows.AuthInterface, user, realm, kdcHost, adminServer, dataDir string, ldapCA *x509.Certificate, command CommandGenerator, certGetter CertGetter) *CommandLineInitializer {
 	return &CommandLineInitializer{
 		auth:            authClient,
 		userName:        user,
@@ -108,8 +97,8 @@ func NewCommandLineInitializerWithCommand(authClient auth.ClientI, user, realm, 
 	}
 }
 
-// commandGenerator is a small interface for wrapping *exec.Cmd
-type commandGenerator interface {
+// CommandGenerator is a small interface for wrapping *exec.Cmd
+type CommandGenerator interface {
 	// CommandContext is a wrapper for creating a command
 	CommandContext(ctx context.Context, name string, args ...string) *exec.Cmd
 }
@@ -119,19 +108,19 @@ type execCmd struct {
 }
 
 // CommandContext returns exec.CommandContext
-func (*execCmd) CommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
+func (e *execCmd) CommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
 	return exec.CommandContext(ctx, name, args...)
 }
 
 // CommandLineInitializer uses a command line `kinit` binary to provide a kerberos CCache
 type CommandLineInitializer struct {
-	auth auth.ClientI
+	auth windows.AuthInterface
 
-	// RealmName is the kerberos realm name (domain name, like `example.com`
+	// RealmName is the kerberos realm Name (domain Name, like `example.com`
 	RealmName string
-	// KDCHostName is the key distribution center host name (usually AD host, like ad.example.com)
+	// KDCHostName is the key distribution center host Name (usually AD host, like ad.example.com)
 	KDCHostName string
-	// AdminServerName is the admin server name (usually AD host)
+	// AdminServerName is the admin server Name (usually AD host)
 	AdminServerName string
 
 	dataDir   string
@@ -142,7 +131,7 @@ type CommandLineInitializer struct {
 	keyPath  string
 	binary   string
 
-	command    commandGenerator
+	command    CommandGenerator
 	certGetter CertGetter
 
 	ldapCertificate *x509.Certificate
@@ -158,17 +147,39 @@ type CertGetter interface {
 // DBCertGetter obtains a new cert/key pair along with the Teleport database CA
 type DBCertGetter struct {
 	// Auth is the auth client
-	Auth auth.ClientI
-	// KDCHostName is the name of the key distribution center host
+	Auth windows.AuthInterface
+	// KDCHostName is the Name of the key distribution center host
 	KDCHostName string
-	// RealmName is the kerberos realm name (domain name)
+	// RealmName is the kerberos realm Name (domain Name)
 	RealmName string
-	// AdminServerName is the name of the admin server. Usually same as the KDC
+	// AdminServerName is the Name of the admin server. Usually same as the KDC
 	AdminServerName string
 	// UserName is the database username
 	UserName string
 	// LDAPCA is the windows ldap certificate
 	LDAPCA *x509.Certificate
+	// CAFunc returns a TLSKeyPair of certificate bytes
+	CAFunc func(ctx context.Context, clusterName string) ([]byte, error)
+}
+
+func (d *DBCertGetter) caFunc(ctx context.Context, clusterName string) ([]byte, error) {
+
+	dbCA, err := d.Auth.GetCertAuthority(ctx, types.CertAuthID{
+		Type:       types.DatabaseCA,
+		DomainName: clusterName,
+	}, true)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	var caCert []byte
+	keyPairs := dbCA.GetActiveKeys().TLS
+	for _, keyPair := range keyPairs {
+		if keyPair.KeyType == types.PrivateKeyType_RAW {
+			caCert = keyPair.Cert
+		}
+	}
+	return caCert, nil
 }
 
 // WindowsCAAndKeyPair is a wrapper around PEM bytes for Windows authentication
@@ -198,20 +209,13 @@ func (d *DBCertGetter) GetCertificateBytes(ctx context.Context) (*WindowsCAAndKe
 		return nil, trace.Wrap(err)
 	}
 
-	dbCA, err := d.Auth.GetCertAuthority(ctx, types.CertAuthID{
-		Type:       types.DatabaseCA,
-		DomainName: clusterName.GetClusterName(),
-	}, true)
-	if err != nil {
-		return nil, trace.Wrap(err)
+	if d.CAFunc == nil {
+		d.CAFunc = d.caFunc
 	}
 
-	var caCert []byte
-	keyPairs := dbCA.GetActiveKeys().TLS
-	for _, keyPair := range keyPairs {
-		if keyPair.KeyType == types.PrivateKeyType_RAW {
-			caCert = keyPair.Cert
-		}
+	caCert, err := d.CAFunc(ctx, clusterName.GetName())
+	if err != nil {
+		return nil, trace.Wrap(err)
 	}
 
 	if caCert == nil {
@@ -290,7 +294,6 @@ func (k *CommandLineInitializer) UseOrCreateCredentials(ctx context.Context) (*c
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-
 	return credentials.LoadCCache(cachePath)
 }
 

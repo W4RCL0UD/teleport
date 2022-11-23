@@ -28,7 +28,8 @@ import (
 	"github.com/gravitational/trace"
 
 	"github.com/gravitational/teleport/api/client/proto"
-	"github.com/gravitational/teleport/lib/auth"
+	"github.com/gravitational/teleport/api/types"
+	"github.com/gravitational/teleport/lib/services"
 )
 
 const (
@@ -92,12 +93,24 @@ func getCertRequest(username, domain string, clusterName string, ldapConfig LDAP
 	return &certRequest{csrPEM: csrPEM, crlEndpoint: fmt.Sprintf("ldap:///%s?certificateRevocationList?base?objectClass=cRLDistributionPoint", crlDN), keyDER: keyDER}, nil
 }
 
+// AuthInterface is a subset of auth.ClientI
+type AuthInterface interface {
+	// GenerateDatabaseCert generates a database certificate for windows SQL Server
+	GenerateDatabaseCert(context.Context, *proto.DatabaseCertRequest) (*proto.DatabaseCertResponse, error)
+	// GenerateWindowsDesktopCert generates a windows remote desktop certificate
+	GenerateWindowsDesktopCert(context.Context, *proto.WindowsDesktopCertRequest) (*proto.WindowsDesktopCertResponse, error)
+	// GetCertAuthority returns a types.CertAuthority interface
+	GetCertAuthority(ctx context.Context, id types.CertAuthID, loadKeys bool, opts ...services.MarshalOption) (types.CertAuthority, error)
+	// GetClusterName returns a types.ClusterName interface
+	GetClusterName(opts ...services.MarshalOption) (types.ClusterName, error)
+}
+
 // GenerateCredentials generates a private key / certificate pair for the given
 // Windows username. The certificate has certain special fields different from
 // the regular Teleport user certificate, to meet the requirements of Active
 // Directory. See:
 // https://docs.microsoft.com/en-us/windows/security/identity-protection/smart-cards/smart-card-certificate-requirements-and-enumeration
-func GenerateCredentials(ctx context.Context, username, domain string, ttl time.Duration, clusterName string, ldapConfig LDAPConfig, authClient auth.ClientI) (certDER, keyDER []byte, err error) {
+func GenerateCredentials(ctx context.Context, username, domain string, ttl time.Duration, clusterName string, ldapConfig LDAPConfig, authClient AuthInterface) (certDER, keyDER []byte, err error) {
 	certReq, err := getCertRequest(username, domain, clusterName, ldapConfig)
 	if err != nil {
 		return nil, nil, trace.Wrap(err)
@@ -129,7 +142,7 @@ func GenerateCredentials(ctx context.Context, username, domain string, ttl time.
 // the regular Teleport user certificate, to meet the requirements of Active
 // Directory. See:
 // https://docs.microsoft.com/en-us/windows/security/identity-protection/smart-cards/smart-card-certificate-requirements-and-enumeration
-func GenerateDatabaseCredentials(ctx context.Context, username, domain string, ttl time.Duration, clusterName string, ldapConfig LDAPConfig, authClient auth.ClientI) (certDER, keyDER []byte, err error) {
+func GenerateDatabaseCredentials(ctx context.Context, username, domain string, ttl time.Duration, clusterName string, ldapConfig LDAPConfig, authClient AuthInterface) (certDER, keyDER []byte, err error) {
 	certReq, err := getCertRequest(username, domain, clusterName, ldapConfig)
 	if err != nil {
 		return nil, nil, trace.Wrap(err)
@@ -158,7 +171,7 @@ func GenerateDatabaseCredentials(ctx context.Context, username, domain string, t
 }
 
 // CertKeyPEM returns certificate and private key bytes encoded in PEM format for use with `kinit`
-func CertKeyPEM(ctx context.Context, username, domain string, ttl time.Duration, clusterName string, ldapConfig LDAPConfig, authClient auth.ClientI) (certPEM, keyPEM []byte, err error) {
+func CertKeyPEM(ctx context.Context, username, domain string, ttl time.Duration, clusterName string, ldapConfig LDAPConfig, authClient AuthInterface) (certPEM, keyPEM []byte, err error) {
 	certDER, keyDER, err := GenerateDatabaseCredentials(ctx, username, domain, ttl, clusterName, ldapConfig, authClient)
 	if err != nil {
 		return nil, nil, trace.Wrap(err)

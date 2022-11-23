@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"strings"
 
 	"github.com/gravitational/trace"
@@ -28,13 +29,17 @@ import (
 	"github.com/jcmturner/gokrb5/v8/keytab"
 	"github.com/jcmturner/gokrb5/v8/spnego"
 
-	"github.com/gravitational/teleport/lib/auth"
+	"github.com/gravitational/teleport/lib/auth/windows"
 	"github.com/gravitational/teleport/lib/srv/db/common"
 	"github.com/gravitational/teleport/lib/srv/db/sqlserver/kinit"
 )
 
+var (
+	errBadCertificate = errors.New("invalid certificate was provided via AD configuration")
+)
+
 // keytabClient returns a kerberos client using a keytab file
-func keytabClient(session *common.Session) (*client.Client, error) {
+func (c *connector) keytabClient(session *common.Session) (*client.Client, error) {
 	// Load keytab.
 	kt, err := keytab.Load(session.Database.GetAD().KeytabFile)
 	if err != nil {
@@ -62,36 +67,47 @@ func keytabClient(session *common.Session) (*client.Client, error) {
 }
 
 // kinitClient returns a kerberos client using a kinit ccache
-func kinitClient(ctx context.Context, session *common.Session, auth auth.ClientI, dataDir string) (*client.Client, error) {
+func (c *connector) kinitClient(ctx context.Context, session *common.Session, auth windows.AuthInterface, dataDir string) (*client.Client, error) {
 	ldapPem, _ := pem.Decode([]byte(session.Database.GetAD().LDAPCert))
+
+	if ldapPem == nil {
+		return nil, trace.Wrap(errBadCertificate)
+	}
 
 	cert, err := x509.ParseCertificate(ldapPem.Bytes)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
-	k := kinit.NewWithCommandLineProvider(auth,
+	certGetter := &kinit.DBCertGetter{
+		Auth:            auth,
+		KDCHostName:     strings.ToUpper(session.Database.GetAD().KDCHostName),
+		RealmName:       session.Database.GetAD().Domain,
+		AdminServerName: session.Database.GetAD().KDCHostName,
+		UserName:        session.Identity.Username,
+		LDAPCA:          cert,
+	}
+
+	if c.caFunc != nil {
+		certGetter.CAFunc = c.caFunc
+	}
+
+	k := kinit.New(kinit.NewCommandLineInitializerWithCommand(auth,
 		session.Identity.Username,
 		strings.ToUpper(session.Database.GetAD().Domain),
 		session.Database.GetAD().Domain,
 		session.Database.GetAD().Domain,
 		dataDir,
-		cert, &kinit.DBCertGetter{
-			Auth:            auth,
-			KDCHostName:     strings.ToUpper(session.Database.GetAD().KDCHostName),
-			RealmName:       session.Database.GetAD().Domain,
-			AdminServerName: session.Database.GetAD().KDCHostName,
-			UserName:        session.Identity.Username,
-			LDAPCA:          cert,
-		},
-	)
+		cert,
+		c.kinitCommandGenerator,
+		certGetter,
+	))
 
 	// create the kinit credentials cache using the previously prepared cert/key pair
 	cc, err := k.UseOrCreateCredentialsCache(ctx)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-
 	// Load krb5.conf.
 	conf, err := config.Load(session.Database.GetAD().Krb5File)
 	if err != nil {
