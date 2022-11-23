@@ -34,6 +34,10 @@ import (
 	"github.com/gravitational/teleport/lib/utils"
 )
 
+// TimeFormat is similar to time.RFC822 ("02 Jan 06 15:04 MST")
+// with the exception years have all digits.
+const TimeFormat string = "02 Jan 2006 15:04 MST"
+
 // ExitCodeError wraps an exit code as an error.
 type ExitCodeError struct {
 	// Code is the exit code

@@ -40,6 +40,7 @@ import (
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/service"
 	"github.com/gravitational/teleport/lib/tlsca"
+	"github.com/gravitational/teleport/tool/common"
 )
 
 // TokensCommand implements `tctl tokens` group of commands
@@ -343,7 +344,7 @@ func (c *TokensCommand) List(ctx context.Context, client auth.ClientI) error {
 			for _, t := range tokens {
 				expiry := "never"
 				if t.Expiry().Unix() > 0 {
-					exptime := t.Expiry().Format(time.RFC822)
+					exptime := t.Expiry().Format(common.TimeFormat)
 					expdur := t.Expiry().Sub(now).Round(time.Second)
 					expiry = fmt.Sprintf("%s (%s)", exptime, expdur.String())
 				}

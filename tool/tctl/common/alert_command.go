@@ -31,6 +31,7 @@ import (
 	"github.com/gravitational/teleport/lib/auth"
 	libclient "github.com/gravitational/teleport/lib/client"
 	"github.com/gravitational/teleport/lib/service"
+	"github.com/gravitational/teleport/tool/common"
 )
 
 // AlertCommand implements the `tctl alerts` family of commands.
@@ -110,7 +111,7 @@ func (c *AlertCommand) List(ctx context.Context, client auth.ClientI) error {
 			table.AddRow([]string{
 				alert.Spec.Severity.String(),
 				fmt.Sprintf("%q", alert.Spec.Message),
-				alert.Spec.Created.Format(time.RFC822),
+				alert.Spec.Created.Format(common.TimeFormat),
 				strings.Join(labelPairs, ", "),
 			})
 		}

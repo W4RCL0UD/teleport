@@ -34,6 +34,7 @@ import (
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/utils"
+	"github.com/gravitational/teleport/tool/common"
 )
 
 var requestLoginHint = "use 'tsh login --request-id=<request-id>' to login with an approved request"
@@ -356,7 +357,7 @@ func showRequestTable(reqs []types.AccessRequest) error {
 			req.GetUser(),
 			strings.Join(req.GetRoles(), ","),
 			resourceIDsString,
-			req.GetCreationTime().UTC().Format(time.RFC822),
+			req.GetCreationTime().UTC().Format(common.TimeFormat),
 			req.GetState().String(),
 		})
 	}

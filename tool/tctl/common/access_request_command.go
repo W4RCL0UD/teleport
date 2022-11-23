@@ -34,6 +34,7 @@ import (
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/service"
 	"github.com/gravitational/teleport/lib/services"
+	"github.com/gravitational/teleport/tool/common"
 )
 
 // AccessRequestCommand implements `tctl users` set of commands
@@ -425,7 +426,7 @@ func printRequestsOverview(reqs []types.AccessRequest, format string) error {
 				req.GetUser(),
 				fmt.Sprintf("roles=%s", strings.Join(req.GetRoles(), ",")),
 				resourceIDsString,
-				req.GetCreationTime().Format(time.RFC822),
+				req.GetCreationTime().Format(common.TimeFormat),
 				req.GetState().String(),
 				quoteOrDefault(req.GetRequestReason(), ""),
 				quoteOrDefault(req.GetResolveReason(), ""),

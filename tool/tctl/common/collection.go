@@ -34,6 +34,7 @@ import (
 	"github.com/gravitational/teleport/lib/reversetunnel"
 	"github.com/gravitational/teleport/lib/sshutils"
 	"github.com/gravitational/teleport/lib/utils"
+	"github.com/gravitational/teleport/tool/common"
 )
 
 type ResourceCollection interface {
@@ -465,7 +466,7 @@ func (c *semaphoreCollection) writeText(w io.Writer) error {
 	for _, sem := range c.sems {
 		for _, ref := range sem.LeaseRefs() {
 			t.AddRow([]string{
-				sem.GetSubKind(), sem.GetName(), ref.LeaseID, ref.Holder, ref.Expires.Format(time.RFC822),
+				sem.GetSubKind(), sem.GetName(), ref.LeaseID, ref.Holder, ref.Expires.Format(common.TimeFormat),
 			})
 		}
 	}
