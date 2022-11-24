@@ -185,71 +185,6 @@ HDKyflZ05nt/zvM6W/WIeMI7VMPw/Ryr7iynMqAYAhJhTFKdSwuNLDY8eFbOUnbw
  }`
 )
 
-type mockClusterName struct {
-}
-
-func (m mockClusterName) GetKind() string {
-	return ""
-}
-
-func (m mockClusterName) GetSubKind() string {
-	return ""
-}
-
-func (m mockClusterName) SetSubKind(s string) {
-}
-
-func (m mockClusterName) GetVersion() string {
-	return ""
-}
-
-func (m mockClusterName) GetName() string {
-	return ""
-}
-
-func (m mockClusterName) SetName(s string) {
-}
-
-func (m mockClusterName) Expiry() time.Time {
-	return time.Time{}
-}
-
-func (m mockClusterName) SetExpiry(t time.Time) {
-}
-
-func (m mockClusterName) GetMetadata() types.Metadata {
-	return types.Metadata{}
-}
-
-func (m mockClusterName) GetResourceID() int64 {
-	return 0
-}
-
-func (m mockClusterName) SetResourceID(i int64) {
-}
-
-func (m mockClusterName) CheckAndSetDefaults() error {
-	return nil
-}
-
-func (m mockClusterName) SetClusterName(s string) {
-}
-
-func (m mockClusterName) GetClusterName() string {
-	return "TestCluster"
-}
-
-func (m mockClusterName) SetClusterID(s string) {
-}
-
-func (m mockClusterName) GetClusterID() string {
-	return ""
-}
-
-func (m mockClusterName) Clone() types.ClusterName {
-	return m
-}
-
 type mockAuth struct{}
 
 func (m *mockAuth) GenerateWindowsDesktopCert(ctx context.Context, request *proto.WindowsDesktopCertRequest) (*proto.WindowsDesktopCertResponse, error) {
@@ -261,7 +196,10 @@ func (m *mockAuth) GetCertAuthority(ctx context.Context, id types.CertAuthID, lo
 }
 
 func (m *mockAuth) GetClusterName(opts ...services.MarshalOption) (types.ClusterName, error) {
-	return &mockClusterName{}, nil
+	return types.NewClusterName(types.ClusterNameSpecV2{
+		ClusterName: "TestCluster",
+		ClusterID:   "TestClusterID",
+	})
 }
 
 func (m *mockAuth) GenerateDatabaseCert(context.Context, *proto.DatabaseCertRequest) (*proto.DatabaseCertResponse, error) {
@@ -357,6 +295,10 @@ func TestConnectorKInitClient(t *testing.T) {
 			connector.DataDir = dir
 
 			connectorCtx, cancel := context.WithCancel(ctx)
+			// we want to pass the cancelled context
+			// because we don't actually initiate a real login,
+			// and the context will get checked in the SQLServer connector
+			// logic
 			cancel()
 
 			resChan := make(chan error, 1)
