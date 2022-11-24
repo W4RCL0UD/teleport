@@ -113,11 +113,11 @@ func TestNewWithCommandLineProvider(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		require.True(t, t.Run(c.name, func(t *testing.T) {
+		t.Run(c.name, func(t *testing.T) {
 			cc, err := c.initializer.UseOrCreateCredentialsCache(context.Background())
 			c.expectErr(t, err)
 			c.expectCacheNil(t, cc)
-		}))
+		})
 	}
 
 }
@@ -146,15 +146,10 @@ func TestKRBConfString(t *testing.T) {
 		"",
 		nil, &staticCache{t: t, pass: true}, &testCertGetter{pass: true})
 
-	tmp, err := os.MkdirTemp("", "kinit")
-	require.NoError(t, err)
+	tmp := t.TempDir()
 
-	defer func() {
-		err = os.RemoveAll(tmp)
-		require.NoError(t, err)
-	}()
 	f := filepath.Join(tmp, "krb.conf")
-	err = cli.WriteKRB5Config(f)
+	err := cli.WriteKRB5Config(f)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(f)

@@ -357,16 +357,18 @@ func TestConnectorKInitClient(t *testing.T) {
 			connector.DataDir = dir
 
 			connectorCtx, cancel := context.WithCancel(ctx)
-			defer cancel()
+			cancel()
 
 			resChan := make(chan error, 1)
 			go func() {
-				_, _, err = connector.Connect(connectorCtx, &common.Session{Database: database, DatabaseUser: databaseUser, DatabaseName: databaseName}, &protocol.Login7Packet{})
+				_, _, err = connector.Connect(connectorCtx,
+					&common.Session{
+						Database:     database,
+						DatabaseUser: databaseUser,
+						DatabaseName: databaseName},
+					&protocol.Login7Packet{})
 				resChan <- err
 			}()
-
-			// Cancel the context to avoid dialing databases.
-			cancel()
 
 			select {
 			case err := <-resChan:
