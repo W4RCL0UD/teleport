@@ -40,11 +40,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/gravitational/trace"
-	"github.com/pkg/sftp"
-	log "github.com/sirupsen/logrus"
-	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/exp/slices"
 
@@ -74,7 +69,16 @@ import (
 	"github.com/gravitational/teleport/lib/service"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/session"
+	"github.com/gravitational/teleport/lib/tlsca"
 	"github.com/gravitational/teleport/lib/utils"
+
+	"github.com/gravitational/trace"
+
+	"github.com/google/uuid"
+	"github.com/jonboulle/clockwork"
+	"github.com/pkg/sftp"
+	log "github.com/sirupsen/logrus"
+	"github.com/stretchr/testify/require"
 )
 
 type integrationTestSuite struct {
@@ -5619,7 +5623,12 @@ func testSessionStartContainsAccessRequest(t *testing.T, suite *integrationTestS
 
 	accessRequestID := req.GetName()
 
-	err = authServer.CreateAccessRequest(context.TODO(), req)
+	clock := clockwork.NewFakeClock()
+	identity := tlsca.Identity{
+		Expires: clock.Now().UTC().Add(8 * time.Hour),
+	}
+
+	err = authServer.CreateAccessRequest(context.TODO(), req, identity)
 	require.NoError(t, err)
 
 	err = authServer.SetAccessRequestState(context.TODO(), types.AccessRequestUpdate{
