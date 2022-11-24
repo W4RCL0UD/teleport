@@ -23,6 +23,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/uuid"
+	"github.com/gravitational/trace"
+	"github.com/jonboulle/clockwork"
+	"github.com/vulcand/predicate"
 	"golang.org/x/exp/slices"
 
 	"github.com/gravitational/teleport/api/client/proto"
@@ -33,13 +38,6 @@ import (
 	"github.com/gravitational/teleport/lib/tlsca"
 	"github.com/gravitational/teleport/lib/utils"
 	"github.com/gravitational/teleport/lib/utils/parse"
-
-	"github.com/gravitational/trace"
-
-	"github.com/google/go-cmp/cmp"
-	"github.com/google/uuid"
-	"github.com/jonboulle/clockwork"
-	"github.com/vulcand/predicate"
 )
 
 const maxAccessRequestReasonSize = 4096

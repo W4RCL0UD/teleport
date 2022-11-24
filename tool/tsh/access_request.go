@@ -359,8 +359,8 @@ func showRequestTable(reqs []types.AccessRequest) error {
 			strings.Join(req.GetRoles(), ","),
 			resourceIDsString,
 			req.GetCreationTime().UTC().Format(time.RFC822),
-			req.Expiry().Sub(time.Now()).Round(time.Minute).String(),
-			req.GetAccessExpiry().Sub(time.Now()).Round(time.Minute).String(),
+			time.Until(req.Expiry()).Round(time.Minute).String(),
+			time.Until(req.GetAccessExpiry()).Round(time.Minute).String(),
 			req.GetState().String(),
 		})
 	}

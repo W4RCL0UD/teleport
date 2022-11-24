@@ -25,6 +25,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gravitational/kingpin"
+	"github.com/gravitational/trace"
+	"github.com/jonboulle/clockwork"
+
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/asciitable"
@@ -32,11 +36,6 @@ import (
 	"github.com/gravitational/teleport/lib/service"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/tlsca"
-
-	"github.com/gravitational/kingpin"
-	"github.com/gravitational/trace"
-
-	"github.com/jonboulle/clockwork"
 )
 
 // AccessRequestCommand implements `tctl users` set of commands
@@ -431,8 +430,8 @@ func printRequestsOverview(reqs []types.AccessRequest, format string) error {
 				fmt.Sprintf("roles=%s", strings.Join(req.GetRoles(), ",")),
 				resourceIDsString,
 				req.GetCreationTime().Format(time.RFC822),
-				req.Expiry().Sub(time.Now()).Round(time.Minute).String(),
-				req.GetAccessExpiry().Sub(time.Now()).Round(time.Minute).String(),
+				time.Until(req.Expiry()).Round(time.Minute).String(),
+				time.Until(req.GetAccessExpiry()).Round(time.Minute).String(),
 				req.GetState().String(),
 				quoteOrDefault(req.GetRequestReason(), ""),
 				quoteOrDefault(req.GetResolveReason(), ""),
