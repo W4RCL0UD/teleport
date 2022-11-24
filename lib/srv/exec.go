@@ -370,6 +370,7 @@ func emitExecAuditEvent(ctx *ServerContext, cmd string, execErr error) {
 		ServerID:        ctx.srv.HostUUID(),
 		ServerHostname:  ctx.srv.GetInfo().GetHostname(),
 		ServerNamespace: ctx.srv.GetNamespace(),
+		ServerLabels:    ctx.srv.GetInfo().GetAllLabels(),
 	}
 
 	sessionMeta := apievents.SessionMetadata{
