@@ -130,12 +130,12 @@ func (c *connector) Connect(ctx context.Context, sessionCtx *common.Session, log
 		if err != nil {
 			return nil, nil, trace.Wrap(err)
 		}
-		a, err := c.getAuth(sessionCtx, kc)
+		dbAuth, err := c.getAuth(sessionCtx, kc)
 		if err != nil {
 			return nil, nil, trace.Wrap(err)
 		}
 
-		connector = mssql.NewConnectorConfig(dsnConfig, a)
+		connector = mssql.NewConnectorConfig(dsnConfig, dbAuth)
 	}
 
 	conn, err := connector.Connect(ctx)
