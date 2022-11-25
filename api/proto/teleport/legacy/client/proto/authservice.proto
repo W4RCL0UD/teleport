@@ -850,7 +850,7 @@ message DatabaseCertRequest {
     // NORMAL is used in all cases except Windows.
     NORMAL = 0;
     // WINDOWS adds specific required extensions for SQL Server, similar to Desktop Access.
-    WINDOWS = 1;
+    WINDOWS_SMARTCARD= 1;
   }
   // CertificateExtensions identifies which extensions, if any, should be added to the certificate.
   Extensions CertificateExtensions = 6 [(gogoproto.jsontag) = "certificate_extensions"];
