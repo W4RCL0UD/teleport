@@ -90,12 +90,16 @@ func step(t *testing.T, name string, cg CommandGenerator, c *testCertGetter, exp
 
 	return &testCase{
 		name: name,
-		initializer: New(NewCommandLineInitializerWithCommand(nil,
-			"alice",
-			"example.com",
-			"host.example.com",
-			"host.example.com",
-			dir, nil, cg, c)),
+		initializer: New(NewCommandLineInitializer(
+			CommandConfig{
+				User:        "alice",
+				Realm:       "example.com",
+				KDCHost:     "host.example.com",
+				AdminServer: "host.example.com",
+				DataDir:     dir,
+				Command:     cg,
+				CertGetter:  c,
+			})),
 		expectErr:      expectErr,
 		expectCacheNil: expectNil,
 	}
@@ -138,13 +142,15 @@ const (
 )
 
 func TestKRBConfString(t *testing.T) {
-	cli := NewCommandLineInitializerWithCommand(nil,
-		"alice",
-		"example.com",
-		"host.example.com",
-		"host.example.com",
-		"",
-		nil, &staticCache{t: t, pass: true}, &testCertGetter{pass: true})
+	cli := NewCommandLineInitializer(
+		CommandConfig{
+			User:        "alice",
+			Realm:       "example.com",
+			KDCHost:     "host.example.com",
+			AdminServer: "host.example.com",
+			Command:     &staticCache{t: t, pass: true},
+			CertGetter:  &testCertGetter{pass: true},
+		})
 
 	tmp := t.TempDir()
 

@@ -56,20 +56,20 @@ type connector struct {
 var errBadKerberosConfig = errors.New("configuration must have either keytab or kdc_host_name and ldap_cert")
 
 func (c *connector) getKerberosClient(ctx context.Context, sessionCtx *common.Session) (*client.Client, error) {
-       switch {
+	switch {
 	case sessionCtx.Database.GetAD().KeytabFile != "":
-		kt, err = c.keytabClient(sessionCtx)
+		kt, err := c.keytabClient(sessionCtx)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
 		return kt, nil
 	case sessionCtx.Database.GetAD().KDCHostName != "" && sessionCtx.Database.GetAD().LDAPCert != "":
-		kt, err = c.kinitClient(ctx, sessionCtx, c.AuthClient, c.DataDir)
+		kt, err := c.kinitClient(ctx, sessionCtx, c.AuthClient, c.DataDir)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
 		return kt, nil
-		
+
 	}
 	return nil, trace.Wrap(errBadKerberosConfig)
 }

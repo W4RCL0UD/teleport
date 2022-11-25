@@ -92,16 +92,18 @@ func (c *connector) kinitClient(ctx context.Context, session *common.Session, au
 		certGetter.CAFunc = c.caFunc
 	}
 
-	k := kinit.New(kinit.NewCommandLineInitializerWithCommand(auth,
-		session.Identity.Username,
-		strings.ToUpper(session.Database.GetAD().Domain),
-		session.Database.GetAD().Domain,
-		session.Database.GetAD().Domain,
-		dataDir,
-		cert,
-		c.kinitCommandGenerator,
-		certGetter,
-	))
+	k := kinit.New(kinit.NewCommandLineInitializer(
+		kinit.CommandConfig{
+			AuthClient:  auth,
+			User:        session.Identity.Username,
+			Realm:       strings.ToUpper(session.Database.GetAD().Domain),
+			KDCHost:     session.Database.GetAD().Domain,
+			AdminServer: session.Database.GetAD().Domain,
+			DataDir:     dataDir,
+			LDAPCA:      cert,
+			Command:     c.kinitCommandGenerator,
+			CertGetter:  certGetter,
+		}))
 
 	// create the kinit credentials cache using the previously prepared cert/key pair
 	cc, err := k.UseOrCreateCredentialsCache(ctx)

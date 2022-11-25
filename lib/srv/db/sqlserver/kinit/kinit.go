@@ -77,22 +77,45 @@ func New(provider Provider) *PKInit {
 	return &PKInit{provider: provider}
 }
 
-// NewCommandLineInitializerWithCommand returns a new command line initializer using a preinstalled `kinit` binary
-func NewCommandLineInitializerWithCommand(authClient windows.AuthInterface, user, realm, kdcHost, adminServer, dataDir string, ldapCA *x509.Certificate, command CommandGenerator, certGetter CertGetter) *CommandLineInitializer {
+// CommandConfig is used to configure a kinit binary execution
+type CommandConfig struct {
+	// AuthClient is a subset of the auth interface
+	AuthClient windows.AuthInterface
+	// User is the username of the database/AD user
+	User string
+	// Realm is the domain name
+	Realm string
+	// KDCHost is the key distribution center hostname (usually AD server)
+	KDCHost string
+	// AdminServer is the administration server hostname (usually AD server)
+	AdminServer string
+	// DataDir is the Teleport Data Directory
+	DataDir string
+	// LDAPCA is the Windows LDAP Certificate for client signing
+	LDAPCA *x509.Certificate
+	// Command is a command generator that generates an executable command
+	Command CommandGenerator
+	// CertGetter is a Teleport Certificate getter that prepares an x509 certificate
+	// for use with windows AD
+	CertGetter CertGetter
+}
+
+// NewCommandLineInitializer returns a new command line initializer using a preinstalled `kinit` binary
+func NewCommandLineInitializer(config CommandConfig) *CommandLineInitializer {
 	cmd := &CommandLineInitializer{
-		auth:            authClient,
-		userName:        user,
-		cacheName:       fmt.Sprintf("%s@%s", user, realm),
-		RealmName:       realm,
-		KDCHostName:     kdcHost,
-		AdminServerName: adminServer,
-		dataDir:         dataDir,
-		certPath:        fmt.Sprintf("%s.pem", user),
-		keyPath:         fmt.Sprintf("%s-key.pem", user),
+		auth:            config.AuthClient,
+		userName:        config.User,
+		cacheName:       fmt.Sprintf("%s@%s", config.User, config.Realm),
+		RealmName:       config.Realm,
+		KDCHostName:     config.KDCHost,
+		AdminServerName: config.AdminServer,
+		dataDir:         config.DataDir,
+		certPath:        fmt.Sprintf("%s.pem", config.User),
+		keyPath:         fmt.Sprintf("%s-key.pem", config.User),
 		binary:          kinitBinary,
-		command:         command,
-		certGetter:      certGetter,
-		ldapCertificate: ldapCA,
+		command:         config.Command,
+		certGetter:      config.CertGetter,
+		ldapCertificate: config.LDAPCA,
 		log:             logrus.StandardLogger(),
 	}
 	if cmd.command == nil {

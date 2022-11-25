@@ -35,7 +35,7 @@ import (
 	"github.com/gravitational/teleport/lib/srv/db/sqlserver/protocol"
 )
 
-//go:embed testdata/kinit.cache
+//go:embed kinit/testdata/kinit.cache
 var cacheData []byte
 
 // TestConnectorSelection given a database session, choose correctly which

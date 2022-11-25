@@ -159,7 +159,7 @@ func GenerateDatabaseCredentials(ctx context.Context, username, domain string, t
 		// of its current domain controllers.
 		CRLEndpoint:           certReq.crlEndpoint,
 		TTL:                   proto.Duration(ttl),
-		CertificateExtensions: proto.DatabaseCertRequest_WINDOWS,
+		CertificateExtensions: proto.DatabaseCertRequest_WINDOWS_SMARTCARD,
 	})
 	if err != nil {
 		return nil, nil, trace.Wrap(err)
