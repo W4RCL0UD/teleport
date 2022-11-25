@@ -4,8 +4,7 @@ kind: Service
 metadata:
   name: {{ .Release.Name }}
   namespace: {{ .Release.Namespace }}
-  labels:
-    app: {{ .Release.Name }}
+  labels: {{- include "teleport-cluster.proxy.labels" . | nindent 4 }}
   {{- if (or (.Values.annotations.service) (eq .Values.chartMode "aws")) }}
   annotations:
     {{- if eq .Values.chartMode "aws" }}
@@ -57,5 +56,4 @@ spec:
     protocol: TCP
   {{- end }}
   {{- end }}
-  selector:
-    app: {{ .Release.Name }}
+  selector: {{- include "teleport-cluster.proxy.selectorLabels" . | nindent 4 }}

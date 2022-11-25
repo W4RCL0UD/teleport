@@ -1,6 +1,6 @@
 suite: Deployment
 templates:
-  - deployment.yaml
+  - statefulset.yaml
   - config.yaml
 tests:
   - it: sets Deployment annotations when specified

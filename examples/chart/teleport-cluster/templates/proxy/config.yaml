@@ -1,0 +1,12 @@
+{{- $configTemplate := printf "teleport-cluster.proxy.config.%s" .Values.chartMode -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-proxy
+  namespace: {{ .Release.Namespace }}
+{{- if .Values.annotations.config }}
+  annotations: {{- toYaml .Values.annotations.config | nindent 4 }}
+{{- end }}
+data:
+  teleport.yaml: |2
+    {{- mustMergeOverwrite (include $configTemplate . | fromYaml) .Values.proxy.teleportConfig | toYaml | nindent 4 -}}

@@ -1,3 +1,12 @@
+auth:
+  teleportConfig: {}
+proxy:
+  teleportConfig: {}
+
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
 ##################################################
 # Values that must always be provided by the user.
 ##################################################
@@ -67,8 +76,8 @@ authentication:
 
 # Teleport supports TLS routing. In this mode, all client connections are wrapped in TLS and multiplexed on one Teleport proxy port.
 # Default mode will not utilize TLS routing and operate in backwards-compatibility mode.
-# Possible values are 'multiplex'
-proxyListenerMode: ""
+# Possible values are 'separate' and 'multiplex'
+proxyListenerMode: "separate"
 
 # Optional setting for configuring session recording.
 # See `session_recording` under https://goteleport.com/docs/setup/reference/config/#teleportyaml

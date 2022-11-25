@@ -6,6 +6,7 @@ kind: Certificate
 metadata:
   name: {{ .Release.Name }}
   namespace: {{ .Release.Namespace }}
+  labels: {{- include "teleport-cluster.proxy.labels" . | nindent 4 }}
 spec:
   secretName: teleport-tls
   {{- if .Values.highAvailability.certManager.addCommonName }}

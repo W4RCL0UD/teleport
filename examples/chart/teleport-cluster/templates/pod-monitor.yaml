@@ -1,0 +1,14 @@
+{{ if .Values.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ .Release.Name }}
+  labels: {{- include "teleport-cluster.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels: {{- include "teleport-cluster.selectorLabels" . | nindent 6 }}
+  podMetricsEndpoints:
+    - port: diag
+      interval: {{ .Values.metrics.serviceMonitor.interval | quote }}
+      path: /metrics
+{{- end }}

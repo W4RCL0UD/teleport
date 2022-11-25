@@ -1,3 +1,4 @@
+{{/*
 {{- if and .Values.podSecurityPolicy.enabled (.Capabilities.APIVersions.Has "policy/v1beta1") -}}
 apiVersion: policy/v1beta1
 kind: PodSecurityPolicy
@@ -60,3 +61,4 @@ subjects:
 - kind: ServiceAccount
   name: {{ .Release.Name }}
 {{- end -}}
+*/}}
