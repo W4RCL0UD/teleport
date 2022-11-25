@@ -56,22 +56,22 @@ type connector struct {
 var errBadKerberosConfig = errors.New("configuration must have either keytab or kdc_host_name and ldap_cert")
 
 func (c *connector) getKerberosClient(ctx context.Context, sessionCtx *common.Session) (*client.Client, error) {
-	var kt *client.Client
-	var err error
-	if sessionCtx.Database.GetAD().KeytabFile != "" {
+       switch {
+	case sessionCtx.Database.GetAD().KeytabFile != "":
 		kt, err = c.keytabClient(sessionCtx)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
-	} else if sessionCtx.Database.GetAD().KDCHostName != "" && sessionCtx.Database.GetAD().LDAPCert != "" {
+		return kt, nil
+	case sessionCtx.Database.GetAD().KDCHostName != "" && sessionCtx.Database.GetAD().LDAPCert != "":
 		kt, err = c.kinitClient(ctx, sessionCtx, c.AuthClient, c.DataDir)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
-	} else {
-		return nil, trace.Wrap(errBadKerberosConfig)
+		return kt, nil
+		
 	}
-	return kt, nil
+	return nil, trace.Wrap(errBadKerberosConfig)
 }
 
 // Connect connects to the target SQL Server with Kerberos authentication.
