@@ -32,9 +32,12 @@ import (
 )
 
 const (
-	ServiceAccountGroup      = "system:serviceaccounts"
+	serviceAccountGroup      = "system:serviceaccounts"
 	ServiceAccountNamePrefix = "system:serviceaccount"
-	ExtraDataPodNameField    = "authentication.kubernetes.io/pod-name"
+	extraDataPodNameField    = "authentication.kubernetes.io/pod-name"
+	// Kubernetes should support bound tokens on 1.20 and 1.21,
+	// but we can have an apiserver running 1.21 and kubelets running 1.19.
+	kubernetesBoundTokenSupportMinor = 22
 )
 
 type Validator struct {
@@ -107,13 +110,13 @@ func (v *Validator) Validate(ctx context.Context, token string) (*v1.UserInfo, e
 		return nil, trace.BadParameter("token user is not a service account: %s", reviewResult.Status.User.Username)
 	}
 
-	if !slices.Contains(reviewResult.Status.User.Groups, ServiceAccountGroup) {
-		return nil, trace.BadParameter("token user '%s' does not belong to the '%s' group", reviewResult.Status.User.Username, ServiceAccountGroup)
+	if !slices.Contains(reviewResult.Status.User.Groups, serviceAccountGroup) {
+		return nil, trace.BadParameter("token user '%s' does not belong to the '%s' group", reviewResult.Status.User.Username, serviceAccountGroup)
 	}
 
 	// We know if the token is bound to a pod if its name is in the Extra userInfo.
 	// If the token is not bound while Kubernetes supports bound tokens we abort.
-	if _, ok := reviewResult.Status.User.Extra[ExtraDataPodNameField]; !ok && boundTokenSupport {
+	if _, ok := reviewResult.Status.User.Extra[extraDataPodNameField]; !ok && boundTokenSupport {
 		return nil, trace.BadParameter(
 			"legacy SA tokens are not accepted as kubernetes version %s supports bound tokens",
 			kubeVersion.GitVersion,
@@ -136,5 +139,5 @@ func kubernetesSupportsBoundTokens(info *version.Info) (bool, error) {
 	if major > 1 {
 		return true, nil
 	}
-	return minor > 20, nil
+	return minor >= kubernetesBoundTokenSupportMinor, nil
 }

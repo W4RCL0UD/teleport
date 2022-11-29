@@ -35,8 +35,8 @@ var userGroups = []string{"system:serviceaccounts", "system:serviceaccounts:name
 
 var boundTokenKubernetesVersion = version.Info{
 	Major:      "1",
-	Minor:      "21",
-	GitVersion: "1.21",
+	Minor:      "22",
+	GitVersion: "1.22",
 }
 
 var legacyTokenKubernetesVersion = version.Info{
@@ -59,6 +59,8 @@ func tokenReviewMock(t *testing.T, reviewResult *v1.TokenReview) func(ctest.Acti
 	}
 }
 
+// newFakeClientset builds a fake clientSet reporting a specific Kubernetes version
+// This is used to test version-specific behaviours.
 func newFakeClientset(version *version.Info) *fakeClientSet {
 	cs := fakeClientSet{}
 	cs.discovery = fakediscovery.FakeDiscovery{
@@ -73,6 +75,7 @@ type fakeClientSet struct {
 	discovery fakediscovery.FakeDiscovery
 }
 
+// Discovery overrides the default fake.Clientset Discovery method and returns our custom discovery mock instead
 func (c fakeClientSet) Discovery() discovery.DiscoveryInterface {
 	return &c.discovery
 }
@@ -198,20 +201,20 @@ func TestIDTokenValidator_Validate(t *testing.T) {
 		},
 	}
 
-	for _, tc := range tests {
-		tc := tc
-		t.Run(tc.token, func(t *testing.T) {
-			client := newFakeClientset(tc.kubeVersion)
-			client.AddReactor("create", "tokenreviews", tokenReviewMock(t, tc.review))
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.token, func(t *testing.T) {
+			client := newFakeClientset(tt.kubeVersion)
+			client.AddReactor("create", "tokenreviews", tokenReviewMock(t, tt.review))
 			v := Validator{
 				client: client,
 			}
-			userInfo, err := v.Validate(context.Background(), tc.token)
-			if tc.expectedError == nil {
+			userInfo, err := v.Validate(context.Background(), tt.token)
+			if tt.expectedError == nil {
 				require.NoError(t, err)
-				require.Equal(t, tc.review.Status.User, *userInfo)
+				require.Equal(t, tt.review.Status.User, *userInfo)
 			} else {
-				require.ErrorIs(t, err, tc.expectedError)
+				require.ErrorIs(t, err, tt.expectedError)
 			}
 		})
 	}
