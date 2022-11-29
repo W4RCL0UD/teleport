@@ -1,16 +1,22 @@
+{{/* This looks like some backward compatibility trick, is this still relevant? */}}
 {{- $persistence := (coalesce .Values.standalone .Values.persistence) -}}
-{{- if and (and (or (eq .Values.chartMode "standalone") (eq .Values.chartMode "custom")) (.Values.persistence.enabled)) (not $persistence.existingClaimName) }}
+{{- if .Values.persistence.enabled }}
+  {{/* Disable persistence for aws and gpc modes */}}
+  {{- if and (not (eq .Values.chartMode "aws")) (not (eq .Values.chartMode "gcp")) }}
+    {{/* No need to create a PVC if we reuse an existing claim */}}
+    {{- if not $persistence.existingClaimName }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ .Release.Name }}
   namespace: {{ .Release.Namespace }}
-  labels:
-    app: {{ .Release.Name }}
+  labels: {{- include "teleport-cluster.auth.labels" . | nindent 4 }}
 spec:
   accessModes:
   - ReadWriteOnce
   resources:
     requests:
       storage: {{ required "persistence.volumeSize is required in chart values" $persistence.volumeSize }}
+    {{- end }}
+  {{- end }}
 {{- end }}

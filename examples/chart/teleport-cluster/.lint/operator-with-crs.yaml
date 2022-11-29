@@ -1,0 +1,32 @@
+clusterName: test-cluster-name
+operator:
+  enabled: true
+  CRs:
+    userV2:
+      alice:
+        roles:
+          - auditor
+      bob:
+        roles:
+          - team-lead
+    roleV5:
+      team-lead:
+        allow:
+          logins: ["root"]
+          kubernetes_groups: ["system:masters"]
+    githubV2:
+      dev-team:
+        client_id: XXXX
+        client_secret: XXXX
+        display: github-dev-team
+        redirect_url: XXXX
+        teams_to_role:
+          - organization: octocats
+            team: dev
+            roles:
+              - access
+          - organization: octocats
+            team: admin
+            roles:
+              - access
+              - team-lead

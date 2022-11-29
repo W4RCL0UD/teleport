@@ -2,7 +2,10 @@ suite: PodSecurityPolicy
 templates:
   - psp.yaml
 tests:
-  - it: creates a PodSecurityPolicy when enabled in values
+  - it: creates a PodSecurityPolicy when enabled in values and api is supported
+    capabilities:
+      apiVersions:
+        - policy/v1beta1
     set:
       podSecurityPolicy:
         enabled: true
@@ -19,3 +22,10 @@ tests:
         isKind:
           of: RoleBinding
       - matchSnapshot: {}
+  - it: does not create a PodSecurityPolicy when the api is not available (removed in 1.25)
+    set:
+      podSecurityPolicy:
+        enabled: true
+    asserts:
+      - hasDocuments:
+          count: 0

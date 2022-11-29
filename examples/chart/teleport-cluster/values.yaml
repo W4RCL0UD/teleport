@@ -147,6 +147,12 @@ operator:
   #    memory: "1Gi"
   #  limits:
   #    memory: "1Gi"
+  CRs:
+    userV2: {}
+    roleV5: {}
+    githubConnectorV3: {}
+    oidcConnectorV3: {}
+    samlConnectorV2: {}
 
 
 # If true, create & use Pod Security Policy resources

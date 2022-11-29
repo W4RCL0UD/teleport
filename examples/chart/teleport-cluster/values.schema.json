@@ -267,7 +267,7 @@
                 "standalone",
                 "aws",
                 "gcp",
-                "custom"
+                "scratch"
             ],
             "default": "standalone"
         },

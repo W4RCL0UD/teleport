@@ -1,10 +1,10 @@
-{{- if and (.Values.acme) (gt (int .Values.highAvailability.replicaCount) 1) }}
-{{- fail "Cannot enable built-in ACME support with more than one replica, use highAvailability.certManager.enabled or tls.existingSecretName instead" }}
-{{- end }}
-{{- if and .Values.highAvailability.certManager.enabled .Values.tls.existingSecretName }}
+{{- $proxy := mustMergeOverwrite .Values .Values.proxy -}}
+{{- $replicable := or $proxy.highAvailability.certManager.enabled $proxy.tls.existingSecretName -}}
+# Deployment is {{ if not $replicable }}not {{end}}replicable
+{{- if and $proxy.highAvailability.certManager.enabled $proxy.tls.existingSecretName }}
 {{- fail "Cannot set both highAvailability.certManager.enabled and tls.existingSecretName, choose one or the other" }}
 {{- end }}
-{{- if and .Values.acme .Values.tls.existingSecretName }}
+{{- if and $proxy.acme $proxy.tls.existingSecretName }}
 {{- fail "Cannot set both acme.enabled and tls.existingSecretName, choose one or the other" }}
 {{- end }}
 apiVersion: apps/v1
@@ -13,12 +13,25 @@ metadata:
   name: {{ .Release.Name }}-proxy
   namespace: {{ .Release.Namespace }}
   labels: {{- include "teleport-cluster.proxy.labels" . | nindent 4 }}
-{{- if .Values.annotations.deployment }}
-  annotations: {{- toYaml .Values.annotations.deployment | nindent 4 }}
+{{- if $proxy.annotations.deployment }}
+  annotations: {{- toYaml $proxy.annotations.deployment | nindent 4 }}
 {{- end }}
 spec:
-  replicas: {{ .Values.highAvailability.replicaCount }}
-  minReadySeconds: {{ .Values.highAvailability.minReadySeconds }}
+{{/*
+  If proxies cannot be replicated we use a single replica.
+  By default we want to upgrade all users to at least 2 replicas, if they had a higher replica count we take it.
+  If a user wants to force a single proxy, they can use the `proxy` specific override.
+*/}}
+{{- if $replicable }}
+  {{- if and (.Values.proxy.highAvailability) (.Values.proxy.highAvailability.replicaCount) }}
+  replicas: {{ .Values.proxy.highAvailability.replicaCount }}
+  {{- else }}
+  replicas: {{ max .Values.highAvailability.replicaCount 2 }}
+  {{- end }}
+  minReadySeconds: {{ $proxy.highAvailability.minReadySeconds }}
+{{- else }}
+  replicas: 1
+{{- end }}
   selector:
     matchLabels: {{- include "teleport-cluster.proxy.selectorLabels" . | nindent 6 }}
   template:
@@ -26,62 +39,101 @@ spec:
       annotations:
         # ConfigMap checksum, to recreate the pod on config changes.
         checksum/config: {{ include (print $.Template.BasePath "/proxy/config.yaml") . | sha256sum }}
-{{- if .Values.annotations.pod }}
-  {{- toYaml .Values.annotations.pod | nindent 8 }}
+{{- if $proxy.annotations.pod }}
+  {{- toYaml $proxy.annotations.pod | nindent 8 }}
 {{- end }}
       labels: {{- include "teleport-cluster.proxy.labels" . | nindent 8 }}
     spec:
-{{/* TODO: affinity/topologyspread ? */}}
-{{- if .Values.tolerations }}
-      tolerations: {{- toYaml .Values.tolerations | nindent 6 }}
+      affinity:
+{{- if $proxy.affinity }}
+  {{- if $proxy.highAvailability.requireAntiAffinity }}
+    {{- fail "Cannot use highAvailability.requireAntiAffinity when affinity is also set in chart values - unset one or the other" }}
+  {{- end }}
+  {{- toYaml $proxy.affinity | nindent 8 }}
+{{- else }}
+        podAntiAffinity:
+  {{- if $proxy.highAvailability.requireAntiAffinity }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app.kubernetes.io/instance
+                operator: In
+                values:
+                  - {{ .Release.Name }}
+              - key: app.kubernetes.io/component
+                operator: In
+                values:
+                - proxy
+            topologyKey: "kubernetes.io/hostname"
+  {{- else if gt (int $proxy.highAvailability.replicaCount) 1 }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 50
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app.kubernetes.io/instance
+                  operator: In
+                  values:
+                    - {{ .Release.Name }}
+                - key: app.kubernetes.io/component
+                  operator: In
+                  values:
+                    - proxy
+              topologyKey: "kubernetes.io/hostname"
+  {{- end }}
 {{- end }}
-{{- if .Values.initContainers }}
-  {{/* TODO: DANGER This is unsafe when using multiple initContainers */}}
-      initContainers: {{- toYaml .Values.initContainers | nindent 6 }}
-  {{- if .Values.resources }}
-        resources:
-    {{- toYaml .Values.resources | nindent 10 }}
-  {{- end }}
-        volumeMounts:
-  {{- if .Values.highAvailability.certManager.enabled }}
-        - mountPath: /etc/teleport-tls
-          name: "teleport-tls"
-          readOnly: true
-  {{- else if .Values.tls.existingSecretName }}
-        - mountPath: /etc/teleport-tls
-          name: "teleport-tls"
-          readOnly: true
-  {{- end }}
-        - mountPath: /etc/teleport
-          name: "config"
-          readOnly: true
-        - mountPath: /var/lib/teleport
-          name: "data"
-  {{- if .Values.extraVolumeMounts }}
-    {{- toYaml .Values.extraVolumeMounts | nindent 8 }}
+{{- if $proxy.tolerations }}
+      tolerations: {{- toYaml $proxy.tolerations | nindent 6 }}
+{{- end }}
+{{- if $proxy.initContainers }}
+      initContainers:
+  {{- range $initContainer := $proxy.initContainers }}
+    {{- if and (not $initContainer.resources) $proxy.resources }}
+      {{- $_ := set $initContainer "resources" $proxy.resources }}
+    {{- end }}
+    {{- list $initContainer | toYaml | nindent 8 }}
+    {{/* Note: this will break if the user sets volumeMounts to its initContainer */}}
+          volumeMounts:
+    {{- if $proxy.highAvailability.certManager.enabled }}
+          - mountPath: /etc/teleport-tls
+            name: "teleport-tls"
+            readOnly: true
+    {{- else if $proxy.tls.existingSecretName }}
+          - mountPath: /etc/teleport-tls
+            name: "teleport-tls"
+            readOnly: true
+    {{- end }}
+          - mountPath: /etc/teleport
+            name: "config"
+            readOnly: true
+          - mountPath: /var/lib/teleport
+            name: "data"
+    {{- if $proxy.extraVolumeMounts }}
+      {{- toYaml $proxy.extraVolumeMounts | nindent 10 }}
+    {{- end }}
   {{- end }}
 {{- end }}
       containers:
       - name: "teleport"
-        image: '{{ if .Values.enterprise }}{{ .Values.enterpriseImage }}{{ else }}{{ .Values.image }}{{ end }}:{{ include "teleport-cluster.version" . }}'
-        imagePullPolicy: {{ .Values.imagePullPolicy }}
-        {{- if or .Values.extraEnv .Values.tls.existingCASecretName }}
+        image: '{{ if $proxy.enterprise }}{{ $proxy.enterpriseImage }}{{ else }}{{ $proxy.image }}{{ end }}:{{ include "teleport-cluster.version" . }}'
+        imagePullPolicy: {{ $proxy.imagePullPolicy }}
+        {{- if or $proxy.extraEnv $proxy.tls.existingCASecretName }}
         env:
-        {{- if (gt (len .Values.extraEnv) 0) }}
-          {{- toYaml .Values.extraEnv | nindent 8 }}
+        {{- if (gt (len $proxy.extraEnv) 0) }}
+          {{- toYaml $proxy.extraEnv | nindent 8 }}
         {{- end }}
-        {{- if .Values.tls.existingCASecretName }}
+        {{- if $proxy.tls.existingCASecretName }}
         - name: SSL_CERT_FILE
           value: /etc/teleport-tls-ca/ca.pem
         {{- end }}
         {{- end }}
         args:
         - "--diag-addr=0.0.0.0:3000"
-        {{- if .Values.insecureSkipProxyTLSVerify }}
+        {{- if $proxy.insecureSkipProxyTLSVerify }}
         - "--insecure"
         {{- end }}
-        {{- if .Values.extraArgs }}
-          {{- toYaml .Values.extraArgs | nindent 8 }}
+        {{- if $proxy.extraArgs }}
+          {{- toYaml $proxy.extraArgs | nindent 8 }}
         {{- end }}
         ports:
         - name: diag
@@ -94,7 +146,7 @@ spec:
           initialDelaySeconds: 5 # wait 5s for agent to start
           periodSeconds: 5 # poll health every 5s
           failureThreshold: 6 # consider agent unhealthy after 30s (6 * 5s)
-          timeoutSeconds: {{ .Values.probeTimeoutSeconds }}
+          timeoutSeconds: {{ $proxy.probeTimeoutSeconds }}
         readinessProbe:
           httpGet:
             path: /readyz
@@ -102,31 +154,31 @@ spec:
           initialDelaySeconds: 5 # wait 5s for agent to register
           periodSeconds: 5 # poll health every 5s
           failureThreshold: 12 # consider agent unhealthy after 60s (12 * 5s)
-          timeoutSeconds: {{ .Values.probeTimeoutSeconds }}
-{{- if .Values.postStart.command }}
+          timeoutSeconds: {{ $proxy.probeTimeoutSeconds }}
+{{- if $proxy.postStart.command }}
         lifecycle:
           postStart:
             exec:
-              command: {{ toYaml .Values.postStart.command | nindent 14 }}
+              command: {{ toYaml $proxy.postStart.command | nindent 14 }}
 {{- end }}
-{{- if .Values.resources }}
+{{- if $proxy.resources }}
         resources:
-  {{- toYaml .Values.resources | nindent 10 }}
+  {{- toYaml $proxy.resources | nindent 10 }}
 {{- end }}
-{{- if .Values.securityContext }}
-        securityContext: {{- toYaml .Values.securityContext | nindent 10 }}
+{{- if $proxy.securityContext }}
+        securityContext: {{- toYaml $proxy.securityContext | nindent 10 }}
 {{- end }}
         volumeMounts:
-{{- if .Values.highAvailability.certManager.enabled }}
+{{- if $proxy.highAvailability.certManager.enabled }}
         - mountPath: /etc/teleport-tls
           name: "teleport-tls"
           readOnly: true
-{{- else if .Values.tls.existingSecretName }}
+{{- else if $proxy.tls.existingSecretName }}
         - mountPath: /etc/teleport-tls
           name: "teleport-tls"
           readOnly: true
 {{- end }}
-{{- if .Values.tls.existingCASecretName }}
+{{- if $proxy.tls.existingCASecretName }}
         - mountPath: /etc/teleport-tls-ca
           name: "teleport-tls-ca"
           readOnly: true
@@ -136,33 +188,33 @@ spec:
           readOnly: true
         - mountPath: /var/lib/teleport
           name: "data"
-{{- if .Values.extraVolumeMounts }}
-  {{- toYaml .Values.extraVolumeMounts | nindent 8 }}
+{{- if $proxy.extraVolumeMounts }}
+  {{- toYaml $proxy.extraVolumeMounts | nindent 8 }}
 {{- end }}
       volumes:
-{{- if .Values.highAvailability.certManager.enabled }}
+{{- if $proxy.highAvailability.certManager.enabled }}
       - name: teleport-tls
         secret:
           secretName: teleport-tls
-{{- else if .Values.tls.existingSecretName }}
+{{- else if $proxy.tls.existingSecretName }}
       - name: teleport-tls
         secret:
-          secretName: {{ .Values.tls.existingSecretName }}
+          secretName: {{ $proxy.tls.existingSecretName }}
 {{- end }}
-{{- if .Values.tls.existingCASecretName }}
+{{- if $proxy.tls.existingCASecretName }}
       - name: teleport-tls-ca
         secret:
-          secretName: {{ .Values.tls.existingCASecretName }}
+          secretName: {{ $proxy.tls.existingCASecretName }}
 {{- end }}
       - name: "config"
         configMap:
           name: {{ .Release.Name }}-proxy
       - name: "data"
         emptyDir: {}
-{{- if .Values.extraVolumes }}
-  {{- toYaml .Values.extraVolumes | nindent 6 }}
+{{- if $proxy.extraVolumes }}
+  {{- toYaml $proxy.extraVolumes | nindent 6 }}
 {{- end }}
-{{- if .Values.priorityClassName }}
-      priorityClassName: {{ .Values.priorityClassName }}
+{{- if $proxy.priorityClassName }}
+      priorityClassName: {{ $proxy.priorityClassName }}
 {{- end }}
       serviceAccountName: {{ include "teleport-cluster.proxy.serviceAccountName" . }}

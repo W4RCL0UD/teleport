@@ -18,15 +18,15 @@ metadata:
   {{- end }}
 spec:
   type: {{ default "LoadBalancer" .Values.service.type }}
-  {{- with .Values.service.spec }}
+{{- with .Values.service.spec }}
   {{- toYaml . | nindent 2 }}
-  {{- end }}
+{{- end }}
   ports:
   - name: https
     port: 443
     targetPort: 3080
     protocol: TCP
-  {{- if not .Values.proxyListenerMode }}
+{{- if eq .Values.proxyListenerMode "separate" }}
   - name: sshproxy
     port: 3023
     targetPort: 3023
@@ -55,5 +55,5 @@ spec:
     targetPort: 27017
     protocol: TCP
   {{- end }}
-  {{- end }}
+{{- end }}
   selector: {{- include "teleport-cluster.proxy.selectorLabels" . | nindent 4 }}

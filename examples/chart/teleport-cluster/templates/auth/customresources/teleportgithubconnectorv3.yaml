@@ -1,0 +1,12 @@
+{{- if .Values.operator.enabled }}
+{{- range $name, $spec := .Values.operator.CRs.githubConnectorV3 }}
+apiVersion: resources.teleport.dev/v3
+kind: TeleportGithubConnector
+metadata:
+  name: {{ $name | quote }}
+  namespace: {{ $.Release.Namespace }}
+  labels: {{- include "teleport-cluster.labels" $ | nindent 4 }}
+spec: {{- toYaml $spec | nindent 2 }}
+---
+{{- end }}
+{{- end }}
