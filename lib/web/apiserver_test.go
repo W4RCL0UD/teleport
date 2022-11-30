@@ -580,6 +580,41 @@ func (s *WebSuite) createUser(t *testing.T, user string, login string, pass stri
 	}
 }
 
+func verifySecurityResponseHeaders(t *testing.T, h http.Header) {
+	t.Helper()
+	cases := []struct {
+		header        string
+		expectedValue string
+	}{
+		{
+			header:        "X-Content-Type-Options",
+			expectedValue: "nosniff",
+		},
+		{
+			header:        "Referrer-Policy",
+			expectedValue: "origin",
+		},
+		{
+			header:        "X-Frame-Options",
+			expectedValue: "SAMEORIGIN",
+		},
+		{
+			header:        "Strict-Transport-Security",
+			expectedValue: "max-age=31536000; includeSubDomains",
+		},
+	}
+
+	for _, tc := range cases {
+		value := h.Get(tc.header)
+		if value == "" {
+			require.FailNowf(t, "Missing %s header in %v", tc.header, h)
+		}
+		if tc.expectedValue != "" {
+			require.Equal(t, tc.expectedValue, value)
+		}
+	}
+}
+
 func TestValidRedirectURL(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -636,6 +671,7 @@ func TestWebSessionsCRUD(t *testing.T) {
 	// make sure we can use client to make authenticated requests
 	re, err := pack.clt.Get(context.Background(), pack.clt.Endpoint("webapi", "sites"), url.Values{})
 	require.NoError(t, err)
+	verifySecurityResponseHeaders(t, re.Headers())
 
 	var clusters []ui.Cluster
 	require.NoError(t, json.Unmarshal(re.Bytes(), &clusters))
@@ -835,6 +871,7 @@ func TestClusterNodesGet(t *testing.T) {
 	// Get nodes.
 	re, err := pack.clt.Get(context.Background(), endpoint, query)
 	require.NoError(t, err)
+	verifySecurityResponseHeaders(t, re.Headers())
 
 	// Test response.
 	res := clusterNodesGetResponse{}
@@ -896,6 +933,7 @@ func TestClusterAlertsGet(t *testing.T) {
 	endpoint := pack.clt.Endpoint("webapi", "sites", clusterName, "alerts")
 	re, err := pack.clt.Get(context.Background(), endpoint, nil)
 	require.NoError(t, err)
+	verifySecurityResponseHeaders(t, re.Headers())
 
 	alerts := clusterAlertsGetResponse{}
 	require.NoError(t, json.Unmarshal(re.Bytes(), &alerts))
@@ -1624,6 +1662,7 @@ func TestActiveSessions(t *testing.T) {
 
 	re, err := pack.clt.Get(s.ctx, pack.clt.Endpoint("webapi", "sites", s.server.ClusterName(), "sessions"), url.Values{})
 	require.NoError(t, err)
+	verifySecurityResponseHeaders(t, re.Headers())
 
 	var sessResp siteSessionsGetResponse
 	require.NoError(t, json.Unmarshal(re.Bytes(), &sessResp))
@@ -1717,6 +1756,7 @@ func TestCreateSession(t *testing.T) {
 		siteSessionGenerateReq{Session: sess},
 	)
 	require.NoError(t, err)
+	verifySecurityResponseHeaders(t, re.Headers())
 
 	var created *siteSessionGenerateResponse
 	require.NoError(t, json.Unmarshal(re.Bytes(), &created))
@@ -1829,6 +1869,7 @@ func TestLogin(t *testing.T) {
 		return clt.Client.HTTPClient().Do(req)
 	})
 	require.NoError(t, err)
+	verifySecurityResponseHeaders(t, re.Headers())
 
 	events, _, err := s.server.AuthServer.AuditLog.SearchEvents(
 		s.clock.Now().Add(-time.Hour),
@@ -1861,6 +1902,7 @@ func TestLogin(t *testing.T) {
 
 	re, err = clt.Get(s.ctx, clt.Endpoint("webapi", "sites"), url.Values{})
 	require.NoError(t, err)
+	verifySecurityResponseHeaders(t, re.Headers())
 
 	var clusters []ui.Cluster
 	require.NoError(t, json.Unmarshal(re.Bytes(), &clusters))
@@ -1926,6 +1968,7 @@ func TestMotD(t *testing.T) {
 	// When I issue a ping request...
 	re, err := wc.Get(s.ctx, wc.Endpoint("webapi", "ping"), url.Values{})
 	require.NoError(t, err)
+	verifySecurityResponseHeaders(t, re.Headers())
 
 	// Expect that the MotD flag in the ping response is set to indicate
 	// a MotD
@@ -1936,6 +1979,7 @@ func TestMotD(t *testing.T) {
 	// When I fetch the MotD...
 	re, err = wc.Get(s.ctx, wc.Endpoint("webapi", "motd"), url.Values{})
 	require.NoError(t, err)
+	verifySecurityResponseHeaders(t, re.Headers())
 
 	// Expect that the text returned is the configured value
 	var motdResponse *webclient.MotD
@@ -2417,6 +2461,7 @@ func TestInstallDatabaseScriptGeneration(t *testing.T) {
 			},
 		})
 	require.NoError(t, err)
+	verifySecurityResponseHeaders(t, re.Headers())
 
 	var responseToken nodeJoinToken
 	require.NoError(t, json.Unmarshal(re.Bytes(), &responseToken))
@@ -3526,6 +3571,7 @@ func TestGetWebConfig(t *testing.T) {
 	endpoint := clt.Endpoint("web", "config.js")
 	re, err := clt.Get(ctx, endpoint, nil)
 	require.NoError(t, err)
+	verifySecurityResponseHeaders(t, re.Headers())
 	require.True(t, strings.HasPrefix(string(re.Bytes()), "var GRV_CONFIG"))
 
 	// Response is type application/javascript, we need to strip off the variable name
