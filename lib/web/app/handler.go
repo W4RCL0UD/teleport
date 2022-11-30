@@ -140,7 +140,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// permits the header `X-Cookie-Value`.
 		// This is for the web UI to post a request to the application to get the proper app session
 		// cookie set on the right application subdomain.
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		w.Header().Set("Access-Control-Allow-Methods", "POST")
 		w.Header().Set("Access-Control-Allow-Headers", "X-Cookie-Value")
 
