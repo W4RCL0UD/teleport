@@ -163,9 +163,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		isMatch := false
+		originPort := origin.Port()
 		for _, addr := range h.c.ProxyPublicAddrs {
 			addrPort := addr.Port(0)
-			originPort := origin.Port()
 
 			if addrPort != 443 { // the port should be present in the origin header
 				if strconv.Itoa(addrPort) != originPort {
