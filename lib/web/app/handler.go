@@ -163,7 +163,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		isMatch := false
 		for _, addr := range h.c.ProxyPublicAddrs {
-			if addr.Host() == origin.Host {
+			if addr.Host() == origin.Hostname() {
 				isMatch = true
 
 				break
