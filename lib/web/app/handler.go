@@ -134,46 +134,48 @@ func NewHandler(ctx context.Context, c *HandlerConfig) (*Handler, error) {
 
 // ServeHTTP hands the request to the request router.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Allow minimal CORS from only the proxy origin
-	// This allows for requests from the proxy to `POST` to `/x-teleport-auth` and only
-	// permits the header `X-Cookie-Value`.
-	// This is for the web UI to post a request to the application to get the proper app session
-	// cookie set on the right application subdomain.
-	w.Header().Set("Access-Control-Allow-Credentials", "true")
-	w.Header().Set("Access-Control-Allow-Methods", "POST")
-	w.Header().Set("Access-Control-Allow-Headers", "X-Cookie-Value")
+	if r.URL.Path == "/x-teleport-auth" {
+		// Allow minimal CORS from only the proxy origin
+		// This allows for requests from the proxy to `POST` to `/x-teleport-auth` and only
+		// permits the header `X-Cookie-Value`.
+		// This is for the web UI to post a request to the application to get the proper app session
+		// cookie set on the right application subdomain.
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Access-Control-Allow-Methods", "POST")
+		w.Header().Set("Access-Control-Allow-Headers", "X-Cookie-Value")
 
-	// NOTE: We do not actually allow multiple origins - `Access-Control-Allow-Origin` can only support
-	// a single domain, so we allow any but filter out any that do not match the public addresses of the proxy.
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+		// NOTE: We do not actually allow multiple origins - `Access-Control-Allow-Origin` can only support
+		// a single domain, so we allow any but filter out any that do not match the public addresses of the proxy.
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	if r.Method == http.MethodOptions {
-		return
-	}
-
-	// Validate that the origin for the request matches any of the public proxy addresses.
-	// This is instead of protecting via CORS headers, as that only supports a single domain.
-	originValue := r.Header.Get("Origin")
-	origin, err := url.Parse(originValue)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-
-		return
-	}
-
-	isMatch := false
-	for _, addr := range h.c.ProxyPublicAddrs {
-		if addr.Host() == origin.Host {
-			isMatch = true
-
-			break
+		if r.Method == http.MethodOptions {
+			return
 		}
-	}
 
-	if !isMatch {
-		w.WriteHeader(http.StatusForbidden)
+		// Validate that the origin for the request matches any of the public proxy addresses.
+		// This is instead of protecting via CORS headers, as that only supports a single domain.
+		originValue := r.Header.Get("Origin")
+		origin, err := url.Parse(originValue)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
 
-		return
+			return
+		}
+
+		isMatch := false
+		for _, addr := range h.c.ProxyPublicAddrs {
+			if addr.Host() == origin.Host {
+				isMatch = true
+
+				break
+			}
+		}
+
+		if !isMatch {
+			w.WriteHeader(http.StatusForbidden)
+
+			return
+		}
 	}
 
 	h.router.ServeHTTP(w, r)
