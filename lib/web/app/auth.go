@@ -44,7 +44,7 @@ func (h *Handler) handleAuth(w http.ResponseWriter, r *http.Request, p httproute
 		SessionID: cookieValue,
 	})
 	if err != nil {
-		h.log.Warn("Request failed: session does not exist.")
+		h.log.WithError(err).Warn("Request failed: unable to get app session")
 		return trace.AccessDenied("access denied")
 	}
 
